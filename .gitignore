@@ -1,0 +1,77 @@
+===============================
+
+Python
+
+===============================
+
+pycache/
+*.py[cod]
+*$py.class
+
+Virtual environments
+
+.venv/
+venv/
+env/
+ENV/
+
+pip / build
+
+pip-wheel-metadata/
+build/
+dist/
+*.egg-info/
+
+===============================
+
+SQLite / lokale Daten
+
+===============================
+
+*.db
+*.sqlite
+*.sqlite3
+portal.db
+
+===============================
+
+Environment / Secrets
+
+===============================
+
+.env
+.env.*
+!.env.example
+
+===============================
+
+Logs
+
+===============================
+
+*.log
+logs/
+uvicorn.log
+
+===============================
+
+IDE / Editor
+
+===============================
+
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+===============================
+
+OS / misc
+
+===============================
+
+*.bak
+*.tmp
+*.orig
