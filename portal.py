@@ -388,8 +388,35 @@ def render_landing(role: str) -> str:
          placeholder="vorname.nachname@hs-offenburg.de">
   <button type="submit">Bestätigungscode anfordern</button>
 </form>
+<p class="hint">
+  Wenn bereits ein API-Schlüssel für diese E-Mail existiert, wird er nach erfolgreicher
+  Bestätigung durch einen neuen Schlüssel ersetzt.
+</p>
+<p class="hint">
+  Sie haben den Code bereits? <a href="/{role}/enter-code">Code hier eingeben</a>
+</p>
 """
     return render_base(f"LiteLLM Portal – {label}", role, body)
+
+
+def render_enter_code(role: str, email: str = "") -> str:
+    esc = html.escape(email, quote=True)
+    body = f"""
+<p class="hint">
+  Geben Sie hier Ihre Hochschul-E-Mail-Adresse und den 6-stelligen Bestätigungscode ein.
+</p>
+<form method="post" action="/{role}/verify-and-get-key">
+  <label for="email">Hochschul-E-Mail-Adresse</label>
+  <input type="email" id="email" name="email" required
+         value="{esc}" placeholder="vorname.nachname@hs-offenburg.de">
+  <label for="code">Bestätigungscode (6 Stellen)</label>
+  <input type="text" id="code" name="code" required maxlength="6" pattern="[0-9]{{6}}"
+         placeholder="123456" inputmode="numeric" autocomplete="one-time-code"
+         oninput="this.value=this.value.replace(/\\D/g,'').slice(0,6)">
+  <button type="submit">Code bestätigen &amp; API-Schlüssel erstellen oder erneuern</button>
+</form>
+"""
+    return render_base("Code eingeben – LiteLLM Portal", role, body)
 
 
 def render_code_sent(role: str, email: str) -> str:
@@ -399,12 +426,17 @@ def render_code_sent(role: str, email: str) -> str:
   Ein 6-stelliger Bestätigungscode wurde an <strong>{esc}</strong> gesendet.
   Der Code ist {CODE_TTL_MINUTES} Minuten gültig.
 </div>
+<p class="hint">
+  Nach der Bestätigung wird ein neuer API-Schlüssel erstellt. Ein vorhandener Schlüssel
+  für diese E-Mail wird dabei automatisch ersetzt.
+</p>
 <form method="post" action="/{role}/verify-and-get-key">
   <input type="hidden" name="email" value="{esc}">
   <label for="code">Bestätigungscode (6 Stellen)</label>
   <input type="text" id="code" name="code" required maxlength="6" pattern="[0-9]{{6}}"
-         placeholder="123456" inputmode="numeric" autocomplete="one-time-code">
-  <button type="submit">Code bestätigen &amp; API-Schlüssel erstellen</button>
+         placeholder="123456" inputmode="numeric" autocomplete="one-time-code"
+         oninput="this.value=this.value.replace(/\\D/g,'').slice(0,6)">
+  <button type="submit">Code bestätigen &amp; API-Schlüssel erstellen oder erneuern</button>
 </form>
 """
     return render_base("Code eingeben – LiteLLM Portal", role, body)
@@ -415,12 +447,13 @@ def render_key_issued(role: str, email: str, key: str) -> str:
     esc_email = html.escape(email)
     esc_key = html.escape(key)
     body = f"""
-<div class="success">Ihr API-Schlüssel wurde erfolgreich erstellt.</div>
+<div class="success">Ihr API-Schlüssel wurde erfolgreich erstellt bzw. erneuert.</div>
 <p>Ihr persönlicher LiteLLM API-Schlüssel:</p>
 <div class="key-box">{esc_key}</div>
 <p class="hint">
   E-Mail: {esc_email}<br>
   Budget: <strong>{budget:.2f} €/Monat</strong><br><br>
+  Falls bereits ein Schlüssel vorhanden war, wurde er ersetzt.<br><br>
   <strong>Bitte speichern Sie diesen Schlüssel sicher.</strong>
   Er wird Ihnen nur einmal angezeigt.<br><br>
   API-Endpunkt: <code>{LITELLM_BASE_URL}</code>
@@ -474,10 +507,8 @@ def _check_basic_auth(request: Request) -> bool:
 # Admin overview helpers
 # ---------------------------------------------------------------------------
 
-async def _fetch_litellm_key(user_id: str) -> str:
-    """Return the masked key_name for a LiteLLM user, or '-' on any error.
-    LiteLLM gibt den vollen Key nach Erstellung nicht mehr zurück – nur den
-    maskierten key_name (z.B. 'sk-...5XXw')."""
+async def _fetch_litellm_info(user_id: str) -> dict:
+    """Gibt masked key_name und Budget eines LiteLLM-Users zurück."""
     headers = {"Authorization": f"Bearer {LITELLM_MASTER_KEY}"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -487,17 +518,17 @@ async def _fetch_litellm_key(user_id: str) -> str:
                 headers=headers,
             )
             if resp.status_code != 200:
-                return "-"
+                return {"key": "-", "budget": "-"}
             data = resp.json()
             keys = data.get("keys", [])
-            if not keys:
-                return "-"
-            first = keys[0]
-            if isinstance(first, dict):
-                return first.get("key_name") or first.get("token") or "-"
-            return str(first)
+            first = keys[0] if keys else {}
+            key_name = (first.get("key_name") or first.get("token") or "-") if isinstance(first, dict) else "-"
+            user_info = data.get("user_info") or {}
+            budget = user_info.get("max_budget")
+            budget_str = f"{budget:.2f} €" if budget is not None else "-"
+            return {"key": key_name, "budget": budget_str}
     except Exception:
-        return "-"
+        return {"key": "-", "budget": "-"}
 
 
 async def _build_rows(pool: asyncpg.Pool) -> list[dict]:
@@ -520,12 +551,12 @@ async def _build_rows(pool: asyncpg.Pool) -> list[dict]:
 
     active_codes = {(r["email"], r["role"]): r["expires_at"] for r in codes}
 
-    # Masked keys parallel von LiteLLM abrufen
+    # Key + Budget parallel von LiteLLM abrufen
     user_ids = [f"{u['role']}:{u['email']}" for u in users]
-    keys = await asyncio.gather(*[_fetch_litellm_key(uid) for uid in user_ids])
+    infos = await asyncio.gather(*[_fetch_litellm_info(uid) for uid in user_ids])
 
     rows = []
-    for user, key in zip(users, keys):
+    for user, info in zip(users, infos):
         expires_at = active_codes.get((user["email"], user["role"]))
         if expires_at:
             remaining = math.ceil((expires_at.replace(tzinfo=timezone.utc) - now).total_seconds() / 60)
@@ -535,7 +566,8 @@ async def _build_rows(pool: asyncpg.Pool) -> list[dict]:
         rows.append({
             "email": user["email"],
             "role": user["role"],
-            "key": key,
+            "key": info["key"],
+            "budget": info["budget"],
             "code_status": code_status,
             "created_at": user["created_at"].strftime("%Y-%m-%d %H:%M"),
         })
@@ -552,16 +584,19 @@ def render_admin_overview(rows: list[dict], flash: str = "") -> str:
         key_short = key[:20] + "…" if len(key) > 20 else key
         role_label = ROLE_LABELS.get(role, role)
         # Escape all user-controlled values for safe HTML embedding
+        budget = r["budget"]
         e = html.escape(email, quote=True)
         k = html.escape(key, quote=True)
         ks = html.escape(key_short)
         cs = html.escape(r["code_status"])
+        bs = html.escape(budget)
         table_rows += (
             f"<tr>"
             f"<td>{e}</td>"
             f"<td>{role_label}</td>"
             f"<td class='mono' title='{k}'>{ks}</td>"
             f"<td>{cs}</td>"
+            f"<td>{bs}</td>"
             f"<td>{r['created_at']}</td>"
             f"<td>"
             f"<form method='post' action='/admin'"
@@ -792,6 +827,13 @@ async def landing(role: str = Path(...)):
     return render_landing(role)
 
 
+@app.get("/{role}/enter-code", response_class=HTMLResponse)
+async def enter_code(role: str = Path(...), email: str = ""):
+    if err := _check_role(role):
+        return err
+    return render_enter_code(role, email.strip().lower())
+
+
 @app.post("/{role}/request-code", response_class=HTMLResponse)
 @limiter.limit(RATE_LIMIT_REQUEST_CODE)
 async def request_code(
@@ -809,24 +851,6 @@ async def request_code(
     if not ok:
         logger.debug("Validierungsfehler: %s", err_msg)
         return HTMLResponse(render_error(err_msg, role), status_code=400)
-
-    user_id = f"{role}:{email}"
-    try:
-        exists = await litellm_user_exists(user_id)
-    except Exception as exc:
-        logger.error("LiteLLM nicht erreichbar: %s", exc)
-        return HTMLResponse(render_error(f"LiteLLM nicht erreichbar: {exc}", role), status_code=503)
-
-    if exists:
-        logger.debug("Nutzer existiert bereits: %s", user_id)
-        return HTMLResponse(
-            render_error(
-                "Für diese E-Mail-Adresse existiert bereits ein API-Schlüssel. "
-                "Bitte wenden Sie sich an den Administrator, wenn Sie einen neuen Schlüssel benötigen.",
-                role,
-            ),
-            status_code=409,
-        )
 
     pool: asyncpg.Pool = request.app.state.pool
     async with pool.acquire() as conn:
@@ -890,7 +914,7 @@ async def verify_and_get_key(
         return err
 
     email = email.strip().lower()
-    code = code.strip()
+    code = "".join(code.split())
 
     if len(email) > 254:
         return HTMLResponse(render_error("Ungültige E-Mail-Adresse.", role), status_code=400)
@@ -932,12 +956,38 @@ async def verify_and_get_key(
         budget = ROLE_BUDGETS[role]
 
         try:
-            await litellm_create_user(user_id, budget)
+            exists = await litellm_user_exists(user_id)
         except Exception as exc:
             return HTMLResponse(
-                render_error(f"Fehler beim Erstellen des LiteLLM-Benutzers: {exc}", role),
+                render_error(f"Fehler bei der LiteLLM-Prüfung: {exc}", role),
                 status_code=502,
             )
+
+        if exists:
+            try:
+                tokens = await litellm_get_user_key_tokens(user_id)
+            except Exception as exc:
+                return HTMLResponse(
+                    render_error(f"Fehler beim Abrufen bestehender LiteLLM-Keys: {exc}", role),
+                    status_code=502,
+                )
+            try:
+                if tokens:
+                    await litellm_delete_keys(tokens)
+                await litellm_update_budget(user_id, budget)
+            except Exception as exc:
+                return HTMLResponse(
+                    render_error(f"Fehler beim Aktualisieren des LiteLLM-Nutzers: {exc}", role),
+                    status_code=502,
+                )
+        else:
+            try:
+                await litellm_create_user(user_id, budget)
+            except Exception as exc:
+                return HTMLResponse(
+                    render_error(f"Fehler beim Erstellen des LiteLLM-Benutzers: {exc}", role),
+                    status_code=502,
+                )
 
         try:
             api_key = await litellm_generate_key(user_id, budget)
@@ -947,16 +997,14 @@ async def verify_and_get_key(
                 status_code=502,
             )
 
-        try:
-            await conn.execute(
-                "INSERT INTO portal_users (email, role) VALUES ($1, $2)",
-                email, role,
-            )
-        except asyncpg.UniqueViolationError:
-            return HTMLResponse(
-                render_error("Ein API-Schlüssel für diese E-Mail existiert bereits.", role),
-                status_code=409,
-            )
+        await conn.execute(
+            """
+            INSERT INTO portal_users (email, role)
+            VALUES ($1, $2)
+            ON CONFLICT (email, role) DO NOTHING
+            """,
+            email, role,
+        )
 
     logger.info("Key ausgestellt: email=%s role=%s", email, role)
     return HTMLResponse(render_key_issued(role, email, api_key))

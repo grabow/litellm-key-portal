@@ -175,6 +175,16 @@ def test_landing_student(client):
     assert resp.status_code == 200
     assert "Student:in" in resp.text
     assert "Bestätigungscode" in resp.text
+    assert "/student/enter-code" in resp.text
+
+
+def test_enter_code_page(client):
+    resp = client.get("/student/enter-code")
+    assert resp.status_code == 200
+    assert "Code eingeben" in resp.text
+    assert 'name="email"' in resp.text
+    assert 'name="code"' in resp.text
+    assert "replace(/\\D/g,''" in resp.text
 
 
 def test_landing_professor_disabled(client):
@@ -195,8 +205,7 @@ def test_request_code_invalid_domain(client):
 
 
 def test_request_code_success(client):
-    with patch("portal.litellm_user_exists", new_callable=AsyncMock, return_value=False), \
-         patch("portal.send_verification_email") as mock_send:
+    with patch("portal.send_verification_email") as mock_send:
         resp = client.post("/student/request-code", data={"email": "alice@hs-offenburg.de"})
     assert resp.status_code == 200
     assert "Bestätigungscode" in resp.text
@@ -205,16 +214,14 @@ def test_request_code_success(client):
 
 
 def test_request_code_smtp_failure(client):
-    with patch("portal.litellm_user_exists", new_callable=AsyncMock, return_value=False), \
-         patch("portal.send_verification_email", side_effect=Exception("SMTP error")):
+    with patch("portal.send_verification_email", side_effect=Exception("SMTP error")):
         resp = client.post("/student/request-code", data={"email": "alice@hs-offenburg.de"})
     assert resp.status_code == 503
 
 
 def test_request_code_cooldown(client):
     # Zweiter Code-Request innerhalb des Cooldowns wird abgelehnt
-    with patch("portal.litellm_user_exists", new_callable=AsyncMock, return_value=False), \
-         patch("portal.send_verification_email"):
+    with patch("portal.send_verification_email"):
         resp1 = client.post("/student/request-code", data={"email": "alice@hs-offenburg.de"})
         resp2 = client.post("/student/request-code", data={"email": "alice@hs-offenburg.de"})
     assert resp1.status_code == 200
@@ -222,10 +229,31 @@ def test_request_code_cooldown(client):
     assert "warten" in resp2.text.lower() or "bereits gesendet" in resp2.text.lower()
 
 
-def test_request_code_duplicate_user(client):
-    with patch("portal.litellm_user_exists", new_callable=AsyncMock, return_value=True):
+def test_request_code_existing_user_allowed(client):
+    with patch("portal.send_verification_email") as mock_send:
         resp = client.post("/student/request-code", data={"email": "alice@hs-offenburg.de"})
-    assert resp.status_code == 409
+    assert resp.status_code == 200
+    assert "Bestätigungscode" in resp.text
+    mock_send.assert_called_once()
+
+
+def test_existing_user_with_key_gets_rotated_key(client):
+    _run(_insert_code("alice@hs-offenburg.de", "student", "333334"))
+    _run(_insert_user("alice@hs-offenburg.de", "student"))
+
+    with patch("portal.litellm_user_exists", new_callable=AsyncMock, return_value=True), \
+         patch("portal.litellm_get_user_key_tokens", new_callable=AsyncMock, return_value=["sk-old-key"]), \
+         patch("portal.litellm_delete_keys", new_callable=AsyncMock) as mock_delete_keys, \
+         patch("portal.litellm_update_budget", new_callable=AsyncMock) as mock_update_budget, \
+         patch("portal.litellm_generate_key", new_callable=AsyncMock, return_value="sk-rotated-key"):
+        resp = client.post(
+            "/student/verify-and-get-key",
+            data={"email": "alice@hs-offenburg.de", "code": "333334"},
+        )
+    assert resp.status_code == 200
+    assert "sk-rotated-key" in resp.text
+    mock_delete_keys.assert_awaited_once_with(["sk-old-key"])
+    mock_update_budget.assert_awaited_once_with("student:alice@hs-offenburg.de", portal.STUDENT_BUDGET)
 
 
 def test_verify_wrong_code(client):
@@ -256,17 +284,36 @@ def test_verify_invalid_code_format(client):
     assert resp.status_code == 400
 
 
-def test_duplicate_user_rejected(client):
+def test_verify_code_with_whitespace_is_normalized(client):
+    _run(_insert_code("alice@hs-offenburg.de", "student", "123456"))
+
+    with patch("portal.litellm_user_exists", new_callable=AsyncMock, return_value=False), \
+         patch("portal.litellm_create_user", new_callable=AsyncMock, return_value={}), \
+         patch("portal.litellm_generate_key", new_callable=AsyncMock, return_value="sk-test-api-key"):
+        resp = client.post(
+            "/student/verify-and-get-key",
+            data={"email": "alice@hs-offenburg.de", "code": " 123 456 "},
+        )
+
+    assert resp.status_code == 200
+    assert "sk-test-api-key" in resp.text
+
+
+def test_existing_user_without_key_gets_new_key(client):
     _run(_insert_code("alice@hs-offenburg.de", "student", "333333"))
     _run(_insert_user("alice@hs-offenburg.de", "student"))
 
-    with patch("portal.litellm_create_user", new_callable=AsyncMock), \
+    with patch("portal.litellm_user_exists", new_callable=AsyncMock, return_value=True), \
+         patch("portal.litellm_get_user_key_tokens", new_callable=AsyncMock, return_value=[]), \
+         patch("portal.litellm_update_budget", new_callable=AsyncMock) as mock_update_budget, \
          patch("portal.litellm_generate_key", new_callable=AsyncMock, return_value="sk-new-key"):
         resp = client.post(
             "/student/verify-and-get-key",
             data={"email": "alice@hs-offenburg.de", "code": "333333"},
         )
-    assert resp.status_code == 409
+    assert resp.status_code == 200
+    assert "sk-new-key" in resp.text
+    mock_update_budget.assert_awaited_once_with("student:alice@hs-offenburg.de", portal.STUDENT_BUDGET)
 
 
 def test_admin_overview_no_auth(client):
@@ -281,7 +328,11 @@ def test_admin_overview_wrong_auth(client):
 
 
 def test_admin_overview_authenticated_empty(client):
-    with patch("portal._fetch_litellm_key", new_callable=AsyncMock, return_value="-"):
+    with patch(
+        "portal._fetch_litellm_info",
+        new_callable=AsyncMock,
+        return_value={"key": "-", "budget": "-"},
+    ):
         resp = client.get("/admin", headers={"Authorization": ADMIN_AUTH})
     assert resp.status_code == 200
     assert "0" in resp.text or "Keine Einträge" in resp.text
@@ -289,7 +340,11 @@ def test_admin_overview_authenticated_empty(client):
 
 def test_admin_overview_with_users(client):
     _run(_insert_user("alice@hs-offenburg.de", "student"))
-    with patch("portal._fetch_litellm_key", new_callable=AsyncMock, return_value="sk-test-key"):
+    with patch(
+        "portal._fetch_litellm_info",
+        new_callable=AsyncMock,
+        return_value={"key": "sk-test-key", "budget": "5.00 €"},
+    ):
         resp = client.get("/admin", headers={"Authorization": ADMIN_AUTH})
     assert resp.status_code == 200
     assert "alice@hs-offenburg.de" in resp.text
@@ -298,7 +353,11 @@ def test_admin_overview_with_users(client):
 
 def test_admin_export_csv(client):
     _run(_insert_user("alice@hs-offenburg.de", "student"))
-    with patch("portal._fetch_litellm_key", new_callable=AsyncMock, return_value="sk-test-key"):
+    with patch(
+        "portal._fetch_litellm_info",
+        new_callable=AsyncMock,
+        return_value={"key": "sk-test-key", "budget": "5.00 €"},
+    ):
         resp = client.get("/admin/export", headers={"Authorization": ADMIN_AUTH})
     assert resp.status_code == 200
     assert "text/csv" in resp.headers["content-type"]
@@ -309,7 +368,8 @@ def test_admin_export_csv(client):
 def test_verify_success_full_flow(client):
     _run(_insert_code("bob@hs-offenburg.de", "student", "456789"))
 
-    with patch("portal.litellm_create_user", new_callable=AsyncMock, return_value={}), \
+    with patch("portal.litellm_user_exists", new_callable=AsyncMock, return_value=False), \
+         patch("portal.litellm_create_user", new_callable=AsyncMock, return_value={}), \
          patch("portal.litellm_generate_key", new_callable=AsyncMock, return_value="sk-test-api-key-12345"):
         resp = client.post(
             "/student/verify-and-get-key",

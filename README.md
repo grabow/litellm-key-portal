@@ -1,13 +1,14 @@
 # HSOG LiteLLM Key Portal
 
-Self-service portal zur Ausgabe von LiteLLM API-Schlüsseln für Studierende und Admins der Hochschule Offenburg.
+Self-service-Portal zur Ausgabe von LiteLLM API-Schlüsseln für Studierende der Hochschule Offenburg.
+Admins verwalten das Portal und die ausgegebenen Schlüssel über einen geschützten Admin-Bereich.
 
 ---
 
 ## Architektur
 
 ```
-Nutzer (Student / Admin)
+Nutzer (Student)
         |
         v
 FastAPI Portal (nur VPN)       ← portal.py
@@ -25,27 +26,18 @@ Der Portal-Prozess kommuniziert mit LiteLLM über den `MASTER_KEY`. Dieser wird 
 
 ## Rollenmodell
 
-Rollen werden über **URLs** gesteuert – kein Dropdown im Formular:
+Im Self-Service ist aktuell genau **eine Rolle** aktiv:
 
 | URL | Zielgruppe | Status |
 |---|---|---|
 | `/student` | Studierende | aktiv |
-| `/professor` | Professorinnen / Professoren | **deaktiviert** (404) |
-| `/admin` | Administratoren | aktiv |
 
-> **Professoren-Route deaktiviert:** `/professor` ist derzeit abgeschaltet (liefert 404).
-> Da sich anhand der E-Mail-Adresse nicht automatisch entscheiden lässt, wer Professor ist,
-> erfolgt die Registrierung ausschließlich manuell durch den Admin über `/admin/overview`
-> (Rolle `professor` auswählen, Key wird generiert und dem Betroffenen direkt mitgeteilt).
->
-> Zum späteren Reaktivieren des Self-Service: `"professor"` in `ROLE_BUDGETS` und `ROLE_LABELS`
-> in `portal.py` wieder eintragen sowie `PROFESSOR_BUDGET` in `.env` setzen.
+Es gibt derzeit keine Self-Service-Registrierung für weitere Rollen. Der geschützte Admin-Bereich dient nur zur Verwaltung bereits angelegter Einträge und Schlüssel.
 
-LiteLLM User-IDs folgen dem Schema `{rolle}:{email}`, z.B.:
+LiteLLM User-IDs folgen dem Schema `{rolle}:{email}`. Aktuell wird dabei nur das Präfix `student:` verwendet, z.B.:
 
 ```
 student:alice@hs-offenburg.de
-admin:carol@hs-offenburg.de
 ```
 
 ---
@@ -60,7 +52,7 @@ Temporäre E-Mail-Bestätigungscodes (15 min TTL, HMAC-SHA256-Hash).
 | Spalte | Typ | Beschreibung |
 |---|---|---|
 | `email` | TEXT | Empfänger-E-Mail |
-| `role` | TEXT | student / professor / admin |
+| `role` | TEXT | aktuell nur `student` |
 | `hashed_code` | TEXT | HMAC-SHA256 des 6-stelligen Codes |
 | `expires_at` | TIMESTAMPTZ | Ablaufzeit (15 min) |
 | `used` | BOOLEAN | einmalig verwendbar |
@@ -71,7 +63,7 @@ Nutzerregister – wer hat sich registriert.
 | Spalte | Typ | Beschreibung |
 |---|---|---|
 | `email` | TEXT | Hochschul-E-Mail |
-| `role` | TEXT | student / professor / admin |
+| `role` | TEXT | aktuell nur `student` |
 | `created_at` | TIMESTAMPTZ | Registrierungszeitpunkt |
 
 ---
@@ -79,7 +71,9 @@ Nutzerregister – wer hat sich registriert.
 ## Sicherheitsmodell
 
 - **E-Mail-Verifikation**: 6-stelliger Code, 15 min TTL, einmalig verwendbar, als HMAC-SHA256 gespeichert
+- **Abgesicherte Code-Eingabe**: Das Eingabeformular akzeptiert clientseitig nur Ziffern; serverseitig werden Leerzeichen entfernt und anschließend genau 6 Ziffern erzwungen
 - **Budget-Kontrolle**: monatliches Max-Budget pro Nutzer, konfigurierbar per Umgebungsvariable, durchgesetzt von LiteLLM
+- **Key-Rotation im Self-Service**: Studierende können erneut einen Verifikationscode anfordern; bei der Bestätigung wird ein vorhandener LiteLLM-Key gelöscht und durch einen neuen ersetzt
 - **Domain-Check**: nur `@hs-offenburg.de`-Adressen werden akzeptiert
 - **Rate Limiting**: konfigurierbare Limits pro Minute (slowapi)
 - **Admin-Bereich**: HTTP Basic Auth (Credentials in `.env`)
@@ -108,10 +102,11 @@ cp .env.example .env
 | `GMAIL_APP_KEY` | Gmail App-Passwort (Google-Konto → Sicherheit → App-Passwörter) |
 | `ALLOWED_DOMAIN` | Erlaubte E-Mail-Domain, z.B. `hs-offenburg.de` |
 | `STUDENT_BUDGET` | Monatliches Budget Studierende (€) |
-| `PROFESSOR_BUDGET` | Monatliches Budget Professoren (€, für spätere Aktivierung) |
-| `ADMIN_BUDGET` | Monatliches Budget Admins (€) |
+| `PROFESSOR_BUDGET` | Derzeit ungenutzt / reserviert |
+| `ADMIN_BUDGET` | Derzeit ungenutzt / reserviert |
 | `RATE_LIMIT_REQUEST_CODE` | Rate Limit Code-Anfrage, z.B. `5/minute` |
 | `RATE_LIMIT_VERIFY` | Rate Limit Verifikation, z.B. `10/minute` |
+| `CODE_COOLDOWN_MINUTES` | Sperrzeit bis zur nächsten Code-Anfrage, z.B. `5` |
 | `DATABASE_URL` | PostgreSQL-URL des Portals |
 | `ADMIN_USERNAME` | Benutzername für Admin-Bereich (Basic Auth) |
 | `ADMIN_PASSWORD` | Passwort für Admin-Bereich (Basic Auth) |
@@ -155,18 +150,20 @@ uvicorn portal:app --reload --port 8080
 
 | URL | Methode | Beschreibung |
 |---|---|---|
-| `/{role}` | GET | Registrierungsformular (role: `student` / `admin`; `/professor` deaktiviert) |
-| `/{role}/request-code` | POST | Bestätigungscode per E-Mail anfordern |
-| `/{role}/verify-and-get-key` | POST | Code prüfen, API-Schlüssel erstellen |
-| `/admin/overview` | GET | Admin-Dashboard (Basic Auth) |
-| `/admin/overview/export` | GET | CSV-Export aller Nutzer (Basic Auth) |
+| `/student` | GET | Registrierungsformular für Studierende |
+| `/student/enter-code` | GET | Direkte Eingabeseite für E-Mail-Adresse und Bestätigungscode |
+| `/student/request-code` | POST | Bestätigungscode per E-Mail anfordern (auch für erneute Key-Ausstellung) |
+| `/student/verify-and-get-key` | POST | Code prüfen, API-Schlüssel erstellen oder bestehenden Schlüssel ersetzen |
+| `/admin` | GET | Admin-Dashboard (Basic Auth) |
+| `/admin` | POST | Admin-Aktionen (Key löschen, Nutzer löschen, Budget setzen, Nutzer anlegen) |
+| `/admin/export` | GET | CSV-Export aller Nutzer (Basic Auth) |
 | `/health` | GET | Healthcheck |
 
 ---
 
 ## Admin-Bereich
 
-`/admin/overview` zeigt für alle registrierten Nutzer:
+`/admin` zeigt für alle registrierten Nutzer:
 
 - E-Mail, Rolle
 - LiteLLM-Key (live von LiteLLM abgefragt)
@@ -175,7 +172,11 @@ uvicorn portal:app --reload --port 8080
 
 Zugang via HTTP Basic Auth (`ADMIN_USERNAME` / `ADMIN_PASSWORD` aus `.env`).
 
-CSV-Export: Button auf der Übersichtsseite oder direkt `/admin/overview/export`.
+CSV-Export: Button auf der Übersichtsseite oder direkt `/admin/export`.
+
+Wenn sich ein bereits vorhandener Student erneut über den Self-Service verifiziert, rotiert das Portal den LiteLLM-Key: bestehende Keys werden gelöscht und direkt ein neuer Schlüssel generiert.
+
+Für die Code-Eingabe kann direkt `/student/enter-code` verwendet werden. Das Formular filtert Nicht-Ziffern im Browser und der Server normalisiert zusätzlich eingefügte Leerzeichen.
 
 ---
 
