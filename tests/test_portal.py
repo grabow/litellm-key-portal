@@ -180,6 +180,14 @@ def test_landing_student(client):
     assert "/student/enter-code" in resp.text
 
 
+def test_landing_student_english(client):
+    resp = client.get("/student?lang=en")
+    assert resp.status_code == 200
+    assert 'lang="en"' in resp.text
+    assert "Request verification code" in resp.text
+    assert "/student/enter-code?lang=en" in resp.text
+
+
 def test_enter_code_page(client):
     resp = client.get("/student/enter-code")
     assert resp.status_code == 200
@@ -187,6 +195,13 @@ def test_enter_code_page(client):
     assert 'name="email"' in resp.text
     assert 'name="code"' in resp.text
     assert "replace(/\\D/g,''" in resp.text
+
+
+def test_enter_code_page_english(client):
+    resp = client.get("/student/enter-code?lang=en")
+    assert resp.status_code == 200
+    assert "Enter code" in resp.text
+    assert "Verification code (6 digits)" in resp.text
 
 
 def test_landing_professor_disabled(client):
@@ -204,6 +219,13 @@ def test_request_code_invalid_domain(client):
         resp = client.post("/student/request-code", data={"email": "alice@gmail.com"})
     assert resp.status_code == 400
     assert "hs-offenburg.de" in resp.text
+
+
+def test_request_code_invalid_domain_english(client):
+    with patch("portal.litellm_user_exists", new_callable=AsyncMock, return_value=False):
+        resp = client.post("/student/request-code?lang=en", data={"email": "alice@gmail.com"})
+    assert resp.status_code == 400
+    assert "Only email addresses from" in resp.text
 
 
 def test_request_code_success(client):
@@ -345,6 +367,19 @@ def test_admin_overview_authenticated_empty(client):
     assert "0" in resp.text or "Keine Einträge" in resp.text
 
 
+def test_admin_overview_authenticated_empty_english(client):
+    with patch(
+        "portal._fetch_litellm_info",
+        new_callable=AsyncMock,
+        return_value={"key": "-", "available_budget": "-", "max_budget": "-"},
+    ):
+        resp = client.get("/admin?lang=en", headers={"Authorization": ADMIN_AUTH})
+    assert resp.status_code == 200
+    assert "Download CSV" in resp.text
+    assert "Add user manually" in resp.text
+    assert "/admin/reset-students?lang=en" in resp.text
+
+
 def test_admin_overview_with_users(client):
     _run(_insert_user("alice@hs-offenburg.de", "student"))
     with patch(
@@ -412,6 +447,20 @@ def test_admin_delete_key(client):
     assert resp.status_code == 303
     assert "key-deleted" in resp.headers["location"]
     mock_del.assert_awaited_once_with(["sk-tok-abc"])
+
+
+def test_admin_delete_key_preserves_lang(client):
+    _run(_insert_user("charlie@hs-offenburg.de", "student"))
+    with patch("portal.litellm_get_user_key_tokens", new_callable=AsyncMock, return_value=["sk-tok-abc"]), \
+         patch("portal.litellm_delete_keys", new_callable=AsyncMock):
+        resp = client.post(
+            "/admin?lang=en",
+            data={"action": "delete-key", "email": "charlie@hs-offenburg.de", "role": "student"},
+            headers={"Authorization": ADMIN_AUTH},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    assert "lang=en" in resp.headers["location"]
 
 
 def test_admin_delete_user(client):
@@ -520,7 +569,7 @@ def test_admin_send_inform_email(client):
     assert resp.status_code == 303
     assert "flash=inform-email-sent" in resp.headers["location"]
     assert "count=2" in resp.headers["location"]
-    mock_send.assert_called_once_with(["alice@hs-offenburg.de", "bob@hs-offenburg.de"])
+    mock_send.assert_called_once_with(["alice@hs-offenburg.de", "bob@hs-offenburg.de"], "de")
 
 
 def test_admin_send_test_inform_email(client):
@@ -535,7 +584,7 @@ def test_admin_send_test_inform_email(client):
 
     assert resp.status_code == 303
     assert "test-inform-email-sent" in resp.headers["location"]
-    mock_send.assert_called_once_with(["test@hs-offenburg.de"])
+    mock_send.assert_called_once_with(["test@hs-offenburg.de"], "de")
 
 
 def test_admin_reset_students_requires_confirmation(client):

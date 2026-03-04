@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Send the current roundmail template to all registered portal users.
+Send the current info mail template to all registered portal users.
 
 Usage:
     python scripts/send_info_mail.py --dry-run
@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 ENV_PATH = ROOT_DIR / ".env"
-TEMPLATE_PATH = ROOT_DIR / "rundmail.txt"
+TEMPLATE_PATH = ROOT_DIR / "infomail.txt"
 
 
 def _load_env() -> None:
@@ -39,9 +39,9 @@ def _validate_template() -> None:
     try:
         content = TEMPLATE_PATH.read_text(encoding="utf-8").strip()
     except OSError as exc:
-        raise RuntimeError(f"rundmail.txt nicht lesbar: {exc}") from exc
+        raise RuntimeError(f"infomail.txt is not readable: {exc}") from exc
     if not content:
-        raise ValueError("rundmail.txt ist leer.")
+        raise ValueError("infomail.txt is empty.")
 
 
 async def _get_recipients(database_url: str) -> list[str]:

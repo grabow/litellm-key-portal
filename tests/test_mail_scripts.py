@@ -8,7 +8,7 @@ from scripts import send_info_mail, send_test_info_mail
 def test_send_test_info_mail_dry_run(monkeypatch):
     monkeypatch.setenv("TEST_INFO_EMAIL", "test@hs-offenburg.de")
     monkeypatch.setattr(send_test_info_mail, "_load_env", lambda: None)
-    monkeypatch.setattr(send_test_info_mail, "TEMPLATE_PATH", Path("rundmail.txt"))
+    monkeypatch.setattr(send_test_info_mail, "TEMPLATE_PATH", Path("infomail.txt"))
     monkeypatch.setattr(send_test_info_mail, "_validate_template", lambda: None)
 
     class LoaderCalled(Exception):

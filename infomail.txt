@@ -1,0 +1,9 @@
+Hello,
+
+Your current LiteLLM API key will be deleted soon.
+Please register again afterwards via the LiteLLM Key Portal to receive a new key.
+
+You can customize the details in this file before sending the email.
+
+Best regards
+Administration
