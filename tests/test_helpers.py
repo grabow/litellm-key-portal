@@ -7,7 +7,7 @@ Keine – weder Datenbank noch Netzwerk erforderlich.
 
 Tests ausführen:
 
-    pytest tests/test_helpers.py -v
+    uv run pytest tests/test_helpers.py -v
 
 Abgedeckte Bereiche
 -------------------

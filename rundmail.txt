@@ -1,0 +1,9 @@
+Hallo,
+
+Ihr bisheriger LiteLLM-API-Key wird in Kuerze geloescht.
+Bitte registrieren Sie sich danach erneut ueber das LiteLLM Key Portal, um einen neuen Key zu erhalten.
+
+Weitere Details koennen in dieser Datei vor dem Versand frei angepasst werden.
+
+Viele Gruesse
+Administration

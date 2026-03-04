@@ -1,5 +1,5 @@
 """
-HSOG LiteLLM Key Portal
+LiteLLM Key Portal
 Self-service portal for issuing LiteLLM API keys to students, professors, and admins.
 
 URLs:
@@ -9,6 +9,8 @@ URLs:
   POST /{role}/verify-and-get-key
   GET  /admin           → Admin dashboard (Nutzerliste + CSV-Export)
   POST /admin           → Admin-Aktionen (delete-key, delete-user, update-budget, add-user)
+  GET  /admin/reset-students
+  POST /admin/reset-students
   GET  /admin/export    → CSV-Download
   GET  /health
 """
@@ -40,6 +42,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+from scripts import reset_students as reset_students_script
 
 # ---------------------------------------------------------------------------
 # Config – fail fast at startup
@@ -87,6 +90,7 @@ RATE_LIMIT_VERIFY = os.environ.get("RATE_LIMIT_VERIFY", "10/minute")
 DATABASE_URL = _require("DATABASE_URL")
 ADMIN_USERNAME = _require("ADMIN_USERNAME")
 ADMIN_PASSWORD = _require("ADMIN_PASSWORD")
+TEST_INFO_EMAIL = os.environ.get("TEST_INFO_EMAIL", "").strip().lower()
 
 # Debug-Logging
 DEBUG = os.environ.get("DEBUG", "false").strip().lower() == "true"
@@ -103,6 +107,7 @@ logger = logging.getLogger("portal")
 
 CODE_TTL_MINUTES = 15
 CODE_COOLDOWN_MINUTES = int(os.environ.get("CODE_COOLDOWN_MINUTES", "5"))
+ROUNDMAIL_PATH = os.path.join(os.path.dirname(__file__), "rundmail.txt")
 
 ROLE_BUDGETS = {
     "student": STUDENT_BUDGET,
@@ -155,7 +160,7 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 limiter = Limiter(key_func=get_remote_address)
 
-app = FastAPI(lifespan=lifespan, title="HSOG LiteLLM Key Portal")
+app = FastAPI(lifespan=lifespan, title="LiteLLM Key Portal")
 app.state.limiter = limiter
 
 
@@ -198,18 +203,13 @@ def validate_email(email: str, role: str) -> tuple[bool, str]:
     return True, ""
 
 
-def send_verification_email(to: str, code: str, role: str) -> None:
+def send_plain_email(to: str, subject: str, text_body: str) -> None:
+    if not to or any(c in to for c in ("\r", "\n", "\x00")):
+        raise ValueError("Ungueltige Empfaengeradresse.")
+
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"Ihr LiteLLM-Bestätigungscode ({code})"
+    msg["Subject"] = subject
     msg["To"] = to
-    text_body = (
-        f"Hallo,\n\n"
-        f"Ihr Bestätigungscode für das LiteLLM API-Portal ({ROLE_LABELS.get(role, role)}) lautet:\n\n"
-        f"  {code}\n\n"
-        f"Der Code ist {CODE_TTL_MINUTES} Minuten gültig.\n\n"
-        f"Wenn Sie diese Anfrage nicht gestellt haben, ignorieren Sie diese E-Mail.\n\n"
-        f"Hochschule Offenburg – KI-Portal"
-    )
     msg.attach(MIMEText(text_body, "plain", "utf-8"))
     if _EMAIL_METHOD == "gmail":
         msg["From"] = GMAIL_USER
@@ -225,7 +225,45 @@ def send_verification_email(to: str, code: str, role: str) -> None:
             smtp.starttls()
             smtp.login(SMTP_USER, SMTP_PASSWORD)
             smtp.sendmail(SMTP_FROM, [to], msg.as_string())
+
+
+def send_verification_email(to: str, code: str, role: str) -> None:
+    text_body = (
+        f"Hallo,\n\n"
+        f"Ihr Bestätigungscode für das LiteLLM API-Portal ({ROLE_LABELS.get(role, role)}) lautet:\n\n"
+        f"  {code}\n\n"
+        f"Der Code ist {CODE_TTL_MINUTES} Minuten gültig.\n\n"
+        f"Wenn Sie diese Anfrage nicht gestellt haben, ignorieren Sie diese E-Mail.\n\n"
+        f"Hochschule – KI-Portal"
+    )
+    send_plain_email(to, f"Ihr LiteLLM-Bestätigungscode ({code})", text_body)
     logger.info("Bestätigungscode gesendet: email=%s role=%s", to, role)
+
+
+def _load_roundmail_text() -> str:
+    try:
+        with open(ROUNDMAIL_PATH, "r", encoding="utf-8") as handle:
+            text_body = handle.read().strip()
+    except OSError as exc:
+        raise RuntimeError(f"Rundmail-Datei nicht lesbar: {exc}") from exc
+    if not text_body:
+        raise ValueError("Rundmail-Datei ist leer.")
+    return text_body
+
+
+def send_inform_email(recipients: list[str]) -> int:
+    unique_recipients = sorted({email.strip().lower() for email in recipients if email and email.strip()})
+    if not unique_recipients:
+        return 0
+
+    text_body = _load_roundmail_text()
+    subject = "Wichtige Information zu Ihrem LiteLLM API-Key"
+
+    for recipient in unique_recipients:
+        send_plain_email(recipient, subject, text_body)
+
+    logger.info("Info-E-Mails gesendet: count=%s", len(unique_recipients))
+    return len(unique_recipients)
 
 
 async def litellm_user_exists(user_id: str) -> bool:
@@ -362,8 +400,8 @@ def render_base(title: str, role: str, body_html: str) -> str:
 </head>
 <body>
   <div class="card">
-    <h1>LiteLLM API-Portal</h1>
-    <p class="subtitle">Hochschule Offenburg – KI-Dienste</p>
+    <h1>LiteLLM Key Portal</h1>
+    <p class="subtitle">Hochschule – KI-Dienste</p>
     <span class="role-badge">{label}</span>
     {body_html}
   </div>
@@ -374,7 +412,7 @@ def render_base(title: str, role: str, body_html: str) -> str:
 def render_error(msg: str, role: str = "") -> str:
     back = f'<a href="/{html.escape(role)}">← Zurück</a>' if role else '<a href="/">← Zurück</a>'
     return render_base(
-        "Fehler – LiteLLM Portal", role or "student",
+        "Fehler – LiteLLM Key Portal", role or "student",
         f'<div class="error">{html.escape(msg)}</div>{back}',
     )
 
@@ -396,7 +434,7 @@ def render_landing(role: str) -> str:
   Sie haben den Code bereits? <a href="/{role}/enter-code">Code hier eingeben</a>
 </p>
 """
-    return render_base(f"LiteLLM Portal – {label}", role, body)
+    return render_base(f"LiteLLM Key Portal – {label}", role, body)
 
 
 def render_enter_code(role: str, email: str = "") -> str:
@@ -416,7 +454,7 @@ def render_enter_code(role: str, email: str = "") -> str:
   <button type="submit">Code bestätigen &amp; API-Schlüssel erstellen oder erneuern</button>
 </form>
 """
-    return render_base("Code eingeben – LiteLLM Portal", role, body)
+    return render_base("Code eingeben – LiteLLM Key Portal", role, body)
 
 
 def render_code_sent(role: str, email: str) -> str:
@@ -439,7 +477,7 @@ def render_code_sent(role: str, email: str) -> str:
   <button type="submit">Code bestätigen &amp; API-Schlüssel erstellen oder erneuern</button>
 </form>
 """
-    return render_base("Code eingeben – LiteLLM Portal", role, body)
+    return render_base("Code eingeben – LiteLLM Key Portal", role, body)
 
 
 def render_key_issued(role: str, email: str, key: str) -> str:
@@ -459,7 +497,7 @@ def render_key_issued(role: str, email: str, key: str) -> str:
   API-Endpunkt: <code>{LITELLM_BASE_URL}</code>
 </p>
 """
-    return render_base("API-Schlüssel erhalten – LiteLLM Portal", role, body)
+    return render_base("API-Schlüssel erhalten – LiteLLM Key Portal", role, body)
 
 
 # ---------------------------------------------------------------------------
@@ -537,7 +575,7 @@ async def _build_rows(pool: asyncpg.Pool) -> list[dict]:
 
     async with pool.acquire() as conn:
         users = await conn.fetch(
-            "SELECT email, role, created_at FROM portal_users ORDER BY created_at DESC"
+            "SELECT email, role, created_at FROM portal_users ORDER BY email ASC, role ASC"
         )
         codes = await conn.fetch(
             """
@@ -572,6 +610,14 @@ async def _build_rows(pool: asyncpg.Pool) -> list[dict]:
             "created_at": user["created_at"].strftime("%Y-%m-%d %H:%M"),
         })
     return rows
+
+
+async def _get_roundmail_recipients(pool: asyncpg.Pool) -> list[str]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT email FROM portal_users WHERE email <> '' ORDER BY email"
+        )
+    return [row["email"] for row in rows]
 
 
 def render_admin_overview(rows: list[dict], flash: str = "") -> str:
@@ -643,6 +689,10 @@ tr:hover td { background: #f0f4ff; }
 .topbar { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; }
 .btn-csv { padding: 0.4rem 0.9rem; background: #2e7d32; color: #fff; border: none;
            border-radius: 5px; font-size: 0.85rem; cursor: pointer; text-decoration: none; }
+.btn-link-danger { padding: 0.4rem 0.9rem; background: #b71c1c; color: #fff; border: none;
+                   border-radius: 5px; font-size: 0.85rem; cursor: pointer; text-decoration: none; }
+.btn-mail { padding: 0.4rem 0.9rem; background: #6a1b9a; color: #fff; border: none;
+            border-radius: 5px; font-size: 0.85rem; cursor: pointer; }
 .count { font-size: 0.9rem; color: #555; }
 .btn-sm { padding: 0.25rem 0.5rem; border: none; border-radius: 4px;
           font-size: 0.78rem; cursor: pointer; white-space: nowrap; }
@@ -664,7 +714,18 @@ tr:hover td { background: #f0f4ff; }
 {flash_html}
 <div class="topbar">
   <a class="btn-csv" href="/admin/export">CSV herunterladen</a>
+  <a class="btn-link-danger" href="/admin/reset-students">Studierende löschen</a>
+  <form method="post" action="/admin">
+    <input type="hidden" name="action" value="send-test-inform-email">
+    <button class="btn-mail" type="submit">Test-Info-Mail senden</button>
+  </form>
+  <form method="post" action="/admin"
+        onsubmit="return confirm('Info-E-Mail an alle registrierten Teilnehmenden senden?')">
+    <input type="hidden" name="action" value="send-inform-email">
+    <button class="btn-mail" type="submit">Info-Mail senden</button>
+  </form>
   <span class="count"><strong>{count}</strong> Einträge</span>
+  <span class="count">Vorlage: <code>rundmail.txt</code></span>
 </div>
 <table>
   <thead>
@@ -698,11 +759,52 @@ tr:hover td { background: #f0f4ff; }
   </form>
 </div>
 """
-    return render_base("Admin-Übersicht – LiteLLM Portal", "admin", body)
+    return render_base("Admin-Übersicht – LiteLLM Key Portal", "admin", body)
+
+
+def render_admin_reset_students() -> str:
+    css_extra = """
+.danger-box { background: #fff4f4; border: 1px solid #f1b5b5; border-radius: 6px; padding: 1rem; }
+.danger-copy { font-size: 0.9rem; color: #555; margin-bottom: 0.9rem; }
+.danger-form { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; }
+.danger-form label { font-size: 0.85rem; font-weight: 600; }
+.danger-form input { padding: 0.55rem 0.7rem; border: 1px solid #d9a2a2;
+  border-radius: 4px; font-size: 0.9rem; width: 220px; margin-bottom: 0; }
+.btn-danger-wide { background: #b71c1c; color: #fff; padding: 0.65rem 0.9rem;
+                   border: none; border-radius: 5px; font-size: 0.9rem; cursor: pointer; }
+.back-link { display: inline-block; margin-top: 1rem; font-size: 0.9rem; }
+"""
+    body = f"""
+<style>{css_extra}</style>
+<div class="danger-box">
+  <p class="danger-copy">
+    Diese Aktion verwendet den bestehenden Student-Reset und löscht zuerst alle studentischen
+    Keys in LiteLLM und danach die zugehörigen Nutzer. Anschließend werden die studentischen
+    Portal-Einträge aus der Datenbank entfernt.
+  </p>
+  <form method="post" action="/admin/reset-students" class="danger-form"
+        onsubmit="return confirm('Wirklich alle Studierenden und deren Keys löschen?')">
+    <div>
+      <label>Bestätigung</label><br>
+      <input type="text" name="delete_confirmation" required placeholder="delete_all"
+             autocomplete="off" spellcheck="false">
+    </div>
+    <div>
+      <label>&nbsp;</label><br>
+      <button class="btn-danger-wide" type="submit">Alle Studierenden löschen</button>
+    </div>
+  </form>
+  <p class="danger-copy">
+    Wenn du wirklich alles löschen willst, tippe bitte <code>delete_all</code>.
+  </p>
+</div>
+<a class="back-link" href="/admin">← Zurück zur Admin-Übersicht</a>
+"""
+    return render_base("Studierende löschen – LiteLLM Key Portal", "admin", body)
 
 
 @app.get("/admin", response_class=HTMLResponse)
-async def admin_overview(request: Request, flash: str = ""):
+async def admin_overview(request: Request, flash: str = "", count: int = 0):
     if not _check_basic_auth(request):
         return _UNAUTHORIZED
     flash_msg = {
@@ -710,9 +812,20 @@ async def admin_overview(request: Request, flash: str = ""):
         "user-deleted": "Nutzer erfolgreich gelöscht.",
         "budget-updated": "Budget erfolgreich aktualisiert.",
         "user-added": "Nutzer erfolgreich angelegt.",
+        "students-reset": "Alle Studierenden wurden erfolgreich gelöscht.",
+        "test-inform-email-sent": "Test-Info-E-Mail erfolgreich gesendet.",
     }.get(flash, "")
+    if flash == "inform-email-sent":
+        flash_msg = f"Info-E-Mail an {count} Empfaenger gesendet."
     rows = await _build_rows(request.app.state.pool)
     return HTMLResponse(render_admin_overview(rows, flash_msg))
+
+
+@app.get("/admin/reset-students", response_class=HTMLResponse)
+async def admin_reset_students_page(request: Request):
+    if not _check_basic_auth(request):
+        return _UNAUTHORIZED
+    return HTMLResponse(render_admin_reset_students())
 
 
 @app.post("/admin", response_class=HTMLResponse)
@@ -795,7 +908,78 @@ async def admin_overview_post(
         )
         return HTMLResponse(render_base("Nutzer angelegt – Admin", "admin", body))
 
+    elif action == "send-inform-email":
+        recipients = await _get_roundmail_recipients(pool)
+        if not recipients:
+            return HTMLResponse(render_error("Keine registrierten Empfaenger vorhanden.", "admin"), status_code=400)
+        try:
+            sent_count = await asyncio.to_thread(send_inform_email, recipients)
+        except Exception as exc:
+            logger.error("send-inform-email Fehler: %s", exc)
+            return HTMLResponse(
+                render_error(f"Fehler beim Versenden der Info-E-Mail: {exc}", "admin"),
+                status_code=502,
+            )
+        return RedirectResponse(f"/admin?flash=inform-email-sent&count={sent_count}", status_code=303)
+
+    elif action == "send-test-inform-email":
+        if not TEST_INFO_EMAIL:
+            return HTMLResponse(
+                render_error("TEST_INFO_EMAIL ist nicht gesetzt. Bitte in der .env konfigurieren.", "admin"),
+                status_code=400,
+            )
+        try:
+            sent_count = await asyncio.to_thread(send_inform_email, [TEST_INFO_EMAIL])
+        except Exception as exc:
+            logger.error("send-test-inform-email Fehler: %s", exc)
+            return HTMLResponse(
+                render_error(f"Fehler beim Versenden der Test-Info-E-Mail: {exc}", "admin"),
+                status_code=502,
+            )
+        if sent_count != 1:
+            return HTMLResponse(
+                render_error("Test-Info-E-Mail konnte nicht eindeutig an eine Adresse gesendet werden.", "admin"),
+                status_code=502,
+            )
+        return RedirectResponse("/admin?flash=test-inform-email-sent", status_code=303)
+
     return HTMLResponse(render_error(f"Unbekannte Aktion: {action}", "admin"), status_code=400)
+
+
+@app.post("/admin/reset-students", response_class=HTMLResponse)
+async def admin_reset_students_post(
+    request: Request,
+    delete_confirmation: str = Form(""),
+):
+    if not _check_basic_auth(request):
+        return _UNAUTHORIZED
+    if delete_confirmation.strip() != "delete_all":
+        return HTMLResponse(
+            render_error("Bestaetigung fehlt. Bitte genau 'delete_all' eingeben.", "admin"),
+            status_code=400,
+        )
+    try:
+        exit_code = await reset_students_script.run_student_reset(dry_run=False, confirm=True)
+    except Exception as exc:
+        logger.error("reset-students Fehler: %s", exc)
+        return HTMLResponse(
+            render_error(f"Fehler beim Ausfuehren des Student-Resets: {exc}", "admin"),
+            status_code=502,
+        )
+    if exit_code == 0:
+        return RedirectResponse("/admin?flash=students-reset", status_code=303)
+    if exit_code == 2:
+        return HTMLResponse(
+            render_error(
+                "Student-Reset wurde mit Fehlern abgeschlossen. Pruefen Sie LiteLLM und die Portal-Datenbank.",
+                "admin",
+            ),
+            status_code=502,
+        )
+    return HTMLResponse(
+        render_error("Student-Reset konnte nicht erfolgreich ausgefuehrt werden.", "admin"),
+        status_code=502,
+    )
 
 
 @app.get("/admin/export")

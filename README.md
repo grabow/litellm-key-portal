@@ -1,7 +1,9 @@
-# HSOG LiteLLM Key Portal
+# LiteLLM Key Portal
 
-Self-service-Portal zur Ausgabe von LiteLLM API-Schlüsseln für Studierende der Hochschule Offenburg.
+Self-service-Portal zur Ausgabe von LiteLLM API-Schlüsseln für Studierende der Hochschule.
 Admins verwalten das Portal und die ausgegebenen Schlüssel über einen geschützten Admin-Bereich.
+
+Voraussetzung ist eine separat installierte und vollständig eigenständig laufende LiteLLM-Instanz. Von dieser Installation benötigt das Portal die LiteLLM-Base-URL sowie den LiteLLM-Master-Key; sinnvoll ist dabei zum Beispiel eine separate Bereitstellung als Docker-Container.
 
 ---
 
@@ -110,6 +112,7 @@ cp .env.example .env
 | `DATABASE_URL` | PostgreSQL-URL des Portals |
 | `ADMIN_USERNAME` | Benutzername für Admin-Bereich (Basic Auth) |
 | `ADMIN_PASSWORD` | Passwort für Admin-Bereich (Basic Auth) |
+| `TEST_INFO_EMAIL` | Empfängeradresse für den Admin-Button `Test-Info-Mail senden` |
 
 ---
 
@@ -125,10 +128,11 @@ Startet `portal-db` (PostgreSQL 16) auf Port 5433.
 
 ### 2. Python-Umgebung einrichten
 
+Für Installation und Ausführung wird `uv` benötigt.
+
 ```bash
 uv venv --python 3.12
-source .venv/bin/activate
-uv pip install -r requirements.txt -r requirements-dev.txt
+uv sync --all-groups
 ```
 
 ### 3. Konfiguration
@@ -141,7 +145,7 @@ cp .env.example .env
 ### 4. Server starten
 
 ```bash
-uvicorn portal:app --reload --port 8080
+uv run uvicorn portal:app --reload --port 8080
 ```
 
 ---
@@ -156,6 +160,7 @@ uvicorn portal:app --reload --port 8080
 | `/student/verify-and-get-key` | POST | Code prüfen, API-Schlüssel erstellen oder bestehenden Schlüssel ersetzen |
 | `/admin` | GET | Admin-Dashboard (Basic Auth) |
 | `/admin` | POST | Admin-Aktionen (Key löschen, Nutzer löschen, Budget setzen, Nutzer anlegen) |
+| `/admin/reset-students` | GET/POST | Geschützte Admin-Seite zum Löschen aller Studierenden |
 | `/admin/export` | GET | CSV-Export aller Nutzer (Basic Auth) |
 | `/health` | GET | Healthcheck |
 
@@ -174,9 +179,47 @@ Zugang via HTTP Basic Auth (`ADMIN_USERNAME` / `ADMIN_PASSWORD` aus `.env`).
 
 CSV-Export: Button auf der Übersichtsseite oder direkt `/admin/export`.
 
+`Test-Info-Mail senden` verschickt die aktuelle Rundmail-Vorlage aus `rundmail.txt` an genau eine in `.env` konfigurierte Adresse (`TEST_INFO_EMAIL`).
+
+`Info-Mail senden` verschickt dieselbe Vorlage an alle aktuell in `portal_users` registrierten Teilnehmenden.
+
+`Studierende löschen` führt auf eine separate, weiterhin per Basic Auth geschützte Admin-Seite. Auch diese Unterseite ist nicht öffentlich zugänglich.
+
 Wenn sich ein bereits vorhandener Student erneut über den Self-Service verifiziert, rotiert das Portal den LiteLLM-Key: bestehende Keys werden gelöscht und direkt ein neuer Schlüssel generiert.
 
 Für die Code-Eingabe kann direkt `/student/enter-code` verwendet werden. Das Formular filtert Nicht-Ziffern im Browser und der Server normalisiert zusätzlich eingefügte Leerzeichen.
+
+---
+
+## Mail-Skripte
+
+Die gleiche Rundmail-Vorlage aus `rundmail.txt` kann auch direkt per CLI versendet werden. Das ist die Grundlage für eine spätere Ausführung per Cron.
+
+### Test-Info-Mail
+
+```bash
+# Vorschau – kein Versand
+uv run python scripts/send_test_info_mail.py --dry-run
+
+# Echte Ausführung
+uv run python scripts/send_test_info_mail.py --confirm
+```
+
+Das Script verwendet `TEST_INFO_EMAIL` aus der `.env` und sendet genau eine Mail.
+
+### Rundmail an alle Teilnehmenden
+
+```bash
+# Vorschau – kein Versand
+uv run python scripts/send_info_mail.py --dry-run
+
+# Echte Ausführung
+uv run python scripts/send_info_mail.py --confirm
+```
+
+Das Script liest alle aktuell registrierten Empfänger aus `portal_users` und versendet an diese die gleiche Vorlage aus `rundmail.txt`.
+
+Hinweis: Die eigentliche Anbindung an Cron-Jobs ist noch nicht umgesetzt. Die dafür vorbereiteten CLI-Skripte sind mit `scripts/send_test_info_mail.py`, `scripts/send_info_mail.py` und `scripts/reset_students.py` bereits vorhanden.
 
 ---
 
@@ -184,10 +227,10 @@ Für die Code-Eingabe kann direkt `/student/enter-code` verwendet werden. Das Fo
 
 ```bash
 # Vorschau – keine Änderungen
-python scripts/reset_students.py --dry-run
+uv run python scripts/reset_students.py --dry-run
 
 # Echte Ausführung
-python scripts/reset_students.py --confirm
+uv run python scripts/reset_students.py --confirm
 ```
 
 Das Script:
@@ -208,8 +251,8 @@ Exit-Code `2` bei Fehlern während der LiteLLM-Löschvorgänge.
 # 1. Portal-Datenbank starten
 docker compose up -d
 
-# 2. Python-Umgebung aktivieren
-source .venv/bin/activate
+# 2. Abhängigkeiten synchronisieren
+uv sync --all-groups
 ```
 
 Kein LiteLLM, kein echtes SMTP erforderlich – beides wird in den Tests vollständig gemockt.
@@ -218,13 +261,13 @@ Kein LiteLLM, kein echtes SMTP erforderlich – beides wird in den Tests vollst�
 
 ```bash
 # Alle Tests
-pytest tests/ -v
+uv run pytest tests/ -v
 
 # Nur Unit-Tests (kein Docker nötig)
-pytest tests/test_helpers.py -v
+uv run pytest tests/test_helpers.py -v
 
 # Nur Integrationstests
-pytest tests/test_portal.py -v
+uv run pytest tests/test_portal.py -v
 ```
 
 ### Abdeckung
@@ -242,8 +285,8 @@ Die Integrationstests schreiben in die echte `portal-db` (PostgreSQL auf Port 54
 
 ```
 portal.py               # FastAPI-Anwendung
-requirements.txt        # Laufzeit-Abhängigkeiten
-requirements-dev.txt    # Test-Abhängigkeiten
+pyproject.toml          # Projekt- und Abhängigkeitsdefinition für uv
+uv.lock                 # Lockfile für reproduzierbare Installationen
 .env.example            # Konfigurationsvorlage (kein Secret)
 docker-compose.yml      # Portal-Datenbank (PostgreSQL)
 scripts/

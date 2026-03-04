@@ -9,7 +9,7 @@ Die Portal-Datenbank muss laufen:
 
 Tests ausführen:
 
-    pytest tests/test_portal.py -v
+    uv run pytest tests/test_portal.py -v
 
 Alle Tests verwenden die echte PostgreSQL-Datenbank (portal-db auf Port 5433).
 LiteLLM und E-Mail-Versand werden vollständig gemockt – es werden keine echten
@@ -24,7 +24,7 @@ Abgedeckte Bereiche
 - Code-Verifikation (korrekt, falsch, abgelaufen, bereits verwendet)
 - Vollständiger Registrierungsflow: Code → LiteLLM-User → API-Key
 - Admin-Bereich (Basic Auth, Übersicht, CSV-Export)
-- Admin-Aktionen: Key löschen, Nutzer löschen, Budget setzen, Nutzer hinzufügen
+- Admin-Aktionen: Key löschen, Nutzer löschen, Budget setzen, Nutzer hinzufügen, Info-Mail versenden
 """
 
 from __future__ import annotations
@@ -327,6 +327,11 @@ def test_admin_overview_wrong_auth(client):
     assert resp.status_code == 401
 
 
+def test_admin_reset_students_page_no_auth(client):
+    resp = client.get("/admin/reset-students")
+    assert resp.status_code == 401
+
+
 def test_admin_overview_authenticated_empty(client):
     with patch(
         "portal._fetch_litellm_info",
@@ -460,6 +465,66 @@ def test_admin_add_user_duplicate(client):
             headers={"Authorization": ADMIN_AUTH},
         )
     assert resp.status_code == 409
+
+
+def test_admin_send_inform_email(client):
+    _run(_insert_user("alice@hs-offenburg.de", "student"))
+    _run(_insert_user("bob@hs-offenburg.de", "student"))
+
+    with patch("portal.send_inform_email", return_value=2) as mock_send:
+        resp = client.post(
+            "/admin",
+            data={"action": "send-inform-email"},
+            headers={"Authorization": ADMIN_AUTH},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 303
+    assert "flash=inform-email-sent" in resp.headers["location"]
+    assert "count=2" in resp.headers["location"]
+    mock_send.assert_called_once_with(["alice@hs-offenburg.de", "bob@hs-offenburg.de"])
+
+
+def test_admin_send_test_inform_email(client):
+    with patch("portal.TEST_INFO_EMAIL", "test@hs-offenburg.de"), \
+         patch("portal.send_inform_email", return_value=1) as mock_send:
+        resp = client.post(
+            "/admin",
+            data={"action": "send-test-inform-email"},
+            headers={"Authorization": ADMIN_AUTH},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 303
+    assert "test-inform-email-sent" in resp.headers["location"]
+    mock_send.assert_called_once_with(["test@hs-offenburg.de"])
+
+
+def test_admin_reset_students_requires_confirmation(client):
+    with patch("portal.reset_students_script.run_student_reset", new_callable=AsyncMock) as mock_reset:
+        resp = client.post(
+            "/admin/reset-students",
+            data={"delete_confirmation": "wrong"},
+            headers={"Authorization": ADMIN_AUTH},
+        )
+
+    assert resp.status_code == 400
+    mock_reset.assert_not_called()
+    assert "delete_all" in resp.text
+
+
+def test_admin_reset_students_success(client):
+    with patch("portal.reset_students_script.run_student_reset", new_callable=AsyncMock, return_value=0) as mock_reset:
+        resp = client.post(
+            "/admin/reset-students",
+            data={"delete_confirmation": "delete_all"},
+            headers={"Authorization": ADMIN_AUTH},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 303
+    assert "students-reset" in resp.headers["location"]
+    mock_reset.assert_awaited_once_with(dry_run=False, confirm=True)
 
 
 def test_admin_unknown_action(client):

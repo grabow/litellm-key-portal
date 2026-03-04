@@ -99,7 +99,7 @@ async def delete_users(client: httpx.AsyncClient, user_ids: list[str], dry_run: 
     return errors
 
 
-async def main(dry_run: bool, confirm: bool) -> int:
+async def run_student_reset(dry_run: bool, confirm: bool) -> int:
     if not dry_run and not confirm:
         print("ERROR: Pass --confirm to perform live deletion, or --dry-run to preview.", file=sys.stderr)
         return 1
@@ -186,4 +186,4 @@ if __name__ == "__main__":
     group.add_argument("--dry-run", action="store_true", help="Preview without modifying anything.")
     group.add_argument("--confirm", action="store_true", help="Perform live deletion.")
     args = parser.parse_args()
-    sys.exit(asyncio.run(main(dry_run=args.dry_run, confirm=args.confirm)))
+    sys.exit(asyncio.run(run_student_reset(dry_run=args.dry_run, confirm=args.confirm)))
