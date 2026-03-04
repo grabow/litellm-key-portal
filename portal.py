@@ -36,6 +36,7 @@ from email.mime.multipart import MIMEMultipart
 
 import asyncpg
 import httpx
+from httpx import HTTPStatusError
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Path, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -546,7 +547,7 @@ def _check_basic_auth(request: Request) -> bool:
 # ---------------------------------------------------------------------------
 
 async def _fetch_litellm_info(user_id: str) -> dict:
-    """Gibt masked key_name und Budget eines LiteLLM-Users zurück."""
+    """Gibt masked key_name, verfügbares Budget und Max-Limit eines LiteLLM-Users zurück."""
     headers = {"Authorization": f"Bearer {LITELLM_MASTER_KEY}"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -556,17 +557,29 @@ async def _fetch_litellm_info(user_id: str) -> dict:
                 headers=headers,
             )
             if resp.status_code != 200:
-                return {"key": "-", "budget": "-"}
+                return {"key": "-", "available_budget": "-", "max_budget": "-"}
             data = resp.json()
             keys = data.get("keys", [])
             first = keys[0] if keys else {}
             key_name = (first.get("key_name") or first.get("token") or "-") if isinstance(first, dict) else "-"
-            user_info = data.get("user_info") or {}
-            budget = user_info.get("max_budget")
-            budget_str = f"{budget:.2f} €" if budget is not None else "-"
-            return {"key": key_name, "budget": budget_str}
+            user_info = data.get("user_info") or data
+            max_budget = user_info.get("max_budget")
+            spend = user_info.get("spend")
+
+            max_budget_str = f"{max_budget:.2f} €" if max_budget is not None else "-"
+            if max_budget is not None and spend is not None:
+                available_budget = max_budget - spend
+                available_budget_str = f"{available_budget:.2f} €"
+            else:
+                available_budget_str = "-"
+
+            return {
+                "key": key_name,
+                "available_budget": available_budget_str,
+                "max_budget": max_budget_str,
+            }
     except Exception:
-        return {"key": "-", "budget": "-"}
+        return {"key": "-", "available_budget": "-", "max_budget": "-"}
 
 
 async def _build_rows(pool: asyncpg.Pool) -> list[dict]:
@@ -605,7 +618,8 @@ async def _build_rows(pool: asyncpg.Pool) -> list[dict]:
             "email": user["email"],
             "role": user["role"],
             "key": info["key"],
-            "budget": info["budget"],
+            "available_budget": info["available_budget"],
+            "max_budget": info["max_budget"],
             "code_status": code_status,
             "created_at": user["created_at"].strftime("%Y-%m-%d %H:%M"),
         })
@@ -620,6 +634,14 @@ async def _get_roundmail_recipients(pool: asyncpg.Pool) -> list[str]:
     return [row["email"] for row in rows]
 
 
+async def _get_student_emails(pool: asyncpg.Pool) -> list[str]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT email FROM portal_users WHERE role = 'student' AND email <> '' ORDER BY email"
+        )
+    return [row["email"] for row in rows]
+
+
 def render_admin_overview(rows: list[dict], flash: str = "") -> str:
     count = len(rows)
     table_rows = ""
@@ -630,19 +652,22 @@ def render_admin_overview(rows: list[dict], flash: str = "") -> str:
         key_short = key[:20] + "…" if len(key) > 20 else key
         role_label = ROLE_LABELS.get(role, role)
         # Escape all user-controlled values for safe HTML embedding
-        budget = r["budget"]
+        available_budget = r["available_budget"]
+        max_budget = r["max_budget"]
         e = html.escape(email, quote=True)
         k = html.escape(key, quote=True)
         ks = html.escape(key_short)
         cs = html.escape(r["code_status"])
-        bs = html.escape(budget)
+        abs_ = html.escape(available_budget)
+        mbs = html.escape(max_budget)
         table_rows += (
             f"<tr>"
             f"<td>{e}</td>"
             f"<td>{role_label}</td>"
             f"<td class='mono' title='{k}'>{ks}</td>"
             f"<td>{cs}</td>"
-            f"<td>{bs}</td>"
+            f"<td>{abs_}</td>"
+            f"<td>{mbs}</td>"
             f"<td>{r['created_at']}</td>"
             f"<td>"
             f"<form method='post' action='/admin'"
@@ -681,8 +706,11 @@ def render_admin_overview(rows: list[dict], flash: str = "") -> str:
     css_extra = """
 body { max-width: 100%; }
 .card { max-width: 1200px; }
-table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.83rem; }
-th { background: #1a4f8a; color: #fff; padding: 0.5rem 0.6rem; text-align: left; white-space: nowrap; }
+.table-scroll { margin-top: 1rem; max-height: 70vh; overflow-y: auto; overflow-x: auto;
+                border: 1px solid #d9e2ef; border-radius: 6px; }
+table { width: 100%; border-collapse: collapse; margin-top: 0; font-size: 0.83rem; }
+th { background: #1a4f8a; color: #fff; padding: 0.5rem 0.6rem; text-align: left;
+     white-space: nowrap; position: sticky; top: 0; z-index: 1; }
 td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #e0e0e0; vertical-align: middle; }
 tr:hover td { background: #f0f4ff; }
 .mono { font-family: monospace; }
@@ -707,6 +735,10 @@ tr:hover td { background: #f0f4ff; }
 .add-form label { font-size: 0.85rem; font-weight: 600; }
 .add-form input, .add-form select { padding: 0.4rem 0.6rem; border: 1px solid #ccc;
   border-radius: 4px; font-size: 0.85rem; width: auto; margin-bottom: 0; }
+.bulk-form { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: flex-end; }
+.bulk-form label { font-size: 0.85rem; font-weight: 600; }
+.bulk-form input { padding: 0.4rem 0.6rem; border: 1px solid #ccc;
+  border-radius: 4px; font-size: 0.85rem; width: 110px; margin-bottom: 0; }
 """
 
     body = f"""
@@ -727,17 +759,19 @@ tr:hover td { background: #f0f4ff; }
   <span class="count"><strong>{count}</strong> Einträge</span>
   <span class="count">Vorlage: <code>rundmail.txt</code></span>
 </div>
-<table>
-  <thead>
-    <tr>
-      <th>E-Mail</th><th>Rolle</th><th>LiteLLM-Key</th><th>Code-Status</th>
-      <th>Registriert</th><th></th><th></th><th>Budget</th>
-    </tr>
-  </thead>
-  <tbody>
-    {table_rows or '<tr><td colspan="8">Keine Einträge vorhanden.</td></tr>'}
-  </tbody>
-</table>
+<div class="table-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>E-Mail</th><th>Rolle</th><th>LiteLLM-Key</th><th>Code-Status</th>
+        <th>Verfügbar</th><th>Max-Limit</th><th>Registriert</th><th></th><th></th><th>Max-Limit setzen</th>
+      </tr>
+    </thead>
+    <tbody>
+      {table_rows or '<tr><td colspan="10">Keine Einträge vorhanden.</td></tr>'}
+    </tbody>
+  </table>
+</div>
 
 <div class="add-section">
   <h2>Nutzer manuell hinzufügen</h2>
@@ -755,6 +789,22 @@ tr:hover td { background: #f0f4ff; }
     <div>
       <label>&nbsp;</label><br>
       <button class="btn-add" type="submit">Hinzufügen &amp; Key generieren</button>
+    </div>
+  </form>
+</div>
+
+<div class="add-section">
+  <h2>Max-Limit für alle Studierenden setzen</h2>
+  <form method="post" action="/admin" class="bulk-form"
+        onsubmit="return confirm('Max-Limit fuer alle Studierenden setzen?')">
+    <input type="hidden" name="action" value="update-student-budgets">
+    <div>
+      <label>Neues Max-Limit</label><br>
+      <input type="number" name="budget" min="0" step="0.01" required placeholder="€">
+    </div>
+    <div>
+      <label>&nbsp;</label><br>
+      <button class="btn-mail" type="submit">Max-Limit setzen</button>
     </div>
   </form>
 </div>
@@ -810,7 +860,8 @@ async def admin_overview(request: Request, flash: str = "", count: int = 0):
     flash_msg = {
         "key-deleted": "Key erfolgreich gelöscht.",
         "user-deleted": "Nutzer erfolgreich gelöscht.",
-        "budget-updated": "Budget erfolgreich aktualisiert.",
+        "budget-updated": "Max-Limit erfolgreich aktualisiert.",
+        "student-budgets-updated": "Max-Limit fuer alle Studierenden erfolgreich aktualisiert.",
         "user-added": "Nutzer erfolgreich angelegt.",
         "students-reset": "Alle Studierenden wurden erfolgreich gelöscht.",
         "test-inform-email-sent": "Test-Info-E-Mail erfolgreich gesendet.",
@@ -885,17 +936,66 @@ async def admin_overview_post(
             return HTMLResponse(render_error(f"Fehler beim Aktualisieren des Budgets: {exc}", "admin"), status_code=502)
         return RedirectResponse("/admin?flash=budget-updated", status_code=303)
 
+    elif action == "update-student-budgets":
+        try:
+            budget_val = float(budget)
+        except (ValueError, TypeError):
+            return HTMLResponse(render_error("Ungültiger Budget-Wert.", "admin"), status_code=400)
+        if budget_val < 0:
+            return HTMLResponse(render_error("Budget darf nicht negativ sein.", "admin"), status_code=400)
+        student_emails = await _get_student_emails(pool)
+        if not student_emails:
+            return HTMLResponse(render_error("Keine Studierenden gefunden.", "admin"), status_code=400)
+        try:
+            await asyncio.gather(*[
+                litellm_update_budget(f"student:{student_email}", budget_val)
+                for student_email in student_emails
+            ])
+        except Exception as exc:
+            logger.error("update-student-budgets Fehler: %s", exc)
+            return HTMLResponse(
+                render_error(f"Fehler beim Aktualisieren der Studierenden-Budgets: {exc}", "admin"),
+                status_code=502,
+            )
+        return RedirectResponse("/admin?flash=student-budgets-updated", status_code=303)
+
     elif action == "add-user":
         if role not in ROLE_BUDGETS:
             return HTMLResponse(render_error(f"Unbekannte Rolle: {role}", "admin"), status_code=400)
         try:
             await litellm_create_user(user_id, ROLE_BUDGETS[role])
-            api_key = await litellm_generate_key(user_id, ROLE_BUDGETS[role])
+        except HTTPStatusError as exc:
+            if exc.response.status_code != 409:
+                return HTMLResponse(render_error(f"Fehler beim Erstellen des Nutzers: {exc}", "admin"), status_code=502)
+            try:
+                await litellm_update_budget(user_id, ROLE_BUDGETS[role])
+            except Exception as update_exc:
+                return HTMLResponse(
+                    render_error(f"Fehler beim Aktualisieren des bestehenden Nutzers: {update_exc}", "admin"),
+                    status_code=502,
+                )
         except Exception as exc:
             return HTMLResponse(render_error(f"Fehler beim Erstellen des Nutzers: {exc}", "admin"), status_code=502)
         try:
+            existing_tokens = await litellm_get_user_key_tokens(user_id)
+            if existing_tokens:
+                await litellm_delete_keys(existing_tokens)
+        except Exception as exc:
+            return HTMLResponse(
+                render_error(f"Fehler beim Rotieren bestehender API-Schlüssel: {exc}", "admin"),
+                status_code=502,
+            )
+        try:
+            api_key = await litellm_generate_key(user_id, ROLE_BUDGETS[role])
+        except Exception as exc:
+            return HTMLResponse(render_error(f"Fehler beim Erstellen des API-Schlüssels: {exc}", "admin"), status_code=502)
+        try:
             async with pool.acquire() as conn:
-                await conn.execute("INSERT INTO portal_users (email, role) VALUES ($1, $2)", email, role)
+                await conn.execute(
+                    "INSERT INTO portal_users (email, role) VALUES ($1, $2) ON CONFLICT (email, role) DO NOTHING",
+                    email,
+                    role,
+                )
         except asyncpg.UniqueViolationError:
             return HTMLResponse(render_error("Nutzer existiert bereits.", "admin"), status_code=409)
         body = (

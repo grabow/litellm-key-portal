@@ -33,8 +33,10 @@ import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 
 import asyncpg
+import httpx
 import pytest
 
 os.environ["LITELLM_BASE_URL"] = "http://localhost:4000"
@@ -336,7 +338,7 @@ def test_admin_overview_authenticated_empty(client):
     with patch(
         "portal._fetch_litellm_info",
         new_callable=AsyncMock,
-        return_value={"key": "-", "budget": "-"},
+        return_value={"key": "-", "available_budget": "-", "max_budget": "-"},
     ):
         resp = client.get("/admin", headers={"Authorization": ADMIN_AUTH})
     assert resp.status_code == 200
@@ -348,12 +350,14 @@ def test_admin_overview_with_users(client):
     with patch(
         "portal._fetch_litellm_info",
         new_callable=AsyncMock,
-        return_value={"key": "sk-test-key", "budget": "5.00 €"},
+        return_value={"key": "sk-test-key", "available_budget": "3.20 €", "max_budget": "5.00 €"},
     ):
         resp = client.get("/admin", headers={"Authorization": ADMIN_AUTH})
     assert resp.status_code == 200
     assert "alice@hs-offenburg.de" in resp.text
     assert "sk-test-key" in resp.text
+    assert "3.20 €" in resp.text
+    assert "5.00 €" in resp.text
 
 
 def test_admin_export_csv(client):
@@ -361,7 +365,7 @@ def test_admin_export_csv(client):
     with patch(
         "portal._fetch_litellm_info",
         new_callable=AsyncMock,
-        return_value={"key": "sk-test-key", "budget": "5.00 €"},
+        return_value={"key": "sk-test-key", "available_budget": "3.20 €", "max_budget": "5.00 €"},
     ):
         resp = client.get("/admin/export", headers={"Authorization": ADMIN_AUTH})
     assert resp.status_code == 200
@@ -442,8 +446,32 @@ def test_admin_update_budget(client):
     mock_budget.assert_awaited_once_with("professor:eve@hs-offenburg.de", 30.0)
 
 
+def test_admin_update_student_budgets(client):
+    _run(_insert_user("alice@hs-offenburg.de", "student"))
+    _run(_insert_user("bob@hs-offenburg.de", "student"))
+
+    with patch("portal.litellm_update_budget", new_callable=AsyncMock) as mock_budget:
+        resp = client.post(
+            "/admin",
+            data={"action": "update-student-budgets", "budget": "12.50"},
+            headers={"Authorization": ADMIN_AUTH},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 303
+    assert "student-budgets-updated" in resp.headers["location"]
+    assert mock_budget.await_count == 2
+    called_args = {call.args for call in mock_budget.await_args_list}
+    assert called_args == {
+        ("student:alice@hs-offenburg.de", 12.5),
+        ("student:bob@hs-offenburg.de", 12.5),
+    }
+
+
 def test_admin_add_user(client):
     with patch("portal.litellm_create_user", new_callable=AsyncMock, return_value={}), \
+         patch("portal.litellm_get_user_key_tokens", new_callable=AsyncMock, return_value=[]), \
+         patch("portal.litellm_delete_keys", new_callable=AsyncMock) as mock_delete_keys, \
          patch("portal.litellm_generate_key", new_callable=AsyncMock, return_value="sk-admin-generated-key"):
         resp = client.post(
             "/admin",
@@ -453,18 +481,28 @@ def test_admin_add_user(client):
     assert resp.status_code == 200
     assert "sk-admin-generated-key" in resp.text
     assert _run(_get_portal_user("frank@hs-offenburg.de", "student")) is not None
+    mock_delete_keys.assert_not_awaited()
 
 
 def test_admin_add_user_duplicate(client):
     _run(_insert_user("grace@hs-offenburg.de", "student"))
-    with patch("portal.litellm_create_user", new_callable=AsyncMock, return_value={}), \
+    request = SimpleNamespace(method="POST", url="http://localhost:4000/user/new")
+    response = httpx.Response(409, request=request)
+    conflict = httpx.HTTPStatusError("409 Conflict", request=request, response=response)
+    with patch("portal.litellm_create_user", new_callable=AsyncMock, side_effect=conflict), \
+         patch("portal.litellm_update_budget", new_callable=AsyncMock) as mock_update_budget, \
+         patch("portal.litellm_get_user_key_tokens", new_callable=AsyncMock, return_value=["sk-old-key"]), \
+         patch("portal.litellm_delete_keys", new_callable=AsyncMock) as mock_delete_keys, \
          patch("portal.litellm_generate_key", new_callable=AsyncMock, return_value="sk-dup-key"):
         resp = client.post(
             "/admin",
             data={"action": "add-user", "email": "grace@hs-offenburg.de", "role": "student"},
             headers={"Authorization": ADMIN_AUTH},
         )
-    assert resp.status_code == 409
+    assert resp.status_code == 200
+    assert "sk-dup-key" in resp.text
+    mock_update_budget.assert_awaited_once_with("student:grace@hs-offenburg.de", portal.STUDENT_BUDGET)
+    mock_delete_keys.assert_awaited_once_with(["sk-old-key"])
 
 
 def test_admin_send_inform_email(client):
