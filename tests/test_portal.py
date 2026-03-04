@@ -270,19 +270,19 @@ def test_duplicate_user_rejected(client):
 
 
 def test_admin_overview_no_auth(client):
-    resp = client.get("/admin/overview")
+    resp = client.get("/admin")
     assert resp.status_code == 401
 
 
 def test_admin_overview_wrong_auth(client):
     bad = "Basic " + base64.b64encode(b"wrong:creds").decode()
-    resp = client.get("/admin/overview", headers={"Authorization": bad})
+    resp = client.get("/admin", headers={"Authorization": bad})
     assert resp.status_code == 401
 
 
 def test_admin_overview_authenticated_empty(client):
     with patch("portal._fetch_litellm_key", new_callable=AsyncMock, return_value="-"):
-        resp = client.get("/admin/overview", headers={"Authorization": ADMIN_AUTH})
+        resp = client.get("/admin", headers={"Authorization": ADMIN_AUTH})
     assert resp.status_code == 200
     assert "0" in resp.text or "Keine Einträge" in resp.text
 
@@ -290,7 +290,7 @@ def test_admin_overview_authenticated_empty(client):
 def test_admin_overview_with_users(client):
     _run(_insert_user("alice@hs-offenburg.de", "student"))
     with patch("portal._fetch_litellm_key", new_callable=AsyncMock, return_value="sk-test-key"):
-        resp = client.get("/admin/overview", headers={"Authorization": ADMIN_AUTH})
+        resp = client.get("/admin", headers={"Authorization": ADMIN_AUTH})
     assert resp.status_code == 200
     assert "alice@hs-offenburg.de" in resp.text
     assert "sk-test-key" in resp.text
@@ -299,7 +299,7 @@ def test_admin_overview_with_users(client):
 def test_admin_export_csv(client):
     _run(_insert_user("alice@hs-offenburg.de", "student"))
     with patch("portal._fetch_litellm_key", new_callable=AsyncMock, return_value="sk-test-key"):
-        resp = client.get("/admin/overview/export", headers={"Authorization": ADMIN_AUTH})
+        resp = client.get("/admin/export", headers={"Authorization": ADMIN_AUTH})
     assert resp.status_code == 200
     assert "text/csv" in resp.headers["content-type"]
     assert "alice@hs-offenburg.de" in resp.text
@@ -335,7 +335,7 @@ def test_admin_delete_key(client):
     with patch("portal.litellm_get_user_key_tokens", new_callable=AsyncMock, return_value=["sk-tok-abc"]), \
          patch("portal.litellm_delete_keys", new_callable=AsyncMock) as mock_del:
         resp = client.post(
-            "/admin/overview",
+            "/admin",
             data={"action": "delete-key", "email": "charlie@hs-offenburg.de", "role": "student"},
             headers={"Authorization": ADMIN_AUTH},
             follow_redirects=False,
@@ -351,7 +351,7 @@ def test_admin_delete_user(client):
          patch("portal.litellm_delete_keys", new_callable=AsyncMock), \
          patch("portal.litellm_delete_user", new_callable=AsyncMock) as mock_del_user:
         resp = client.post(
-            "/admin/overview",
+            "/admin",
             data={"action": "delete-user", "email": "dave@hs-offenburg.de", "role": "student"},
             headers={"Authorization": ADMIN_AUTH},
             follow_redirects=False,
@@ -367,7 +367,7 @@ def test_admin_update_budget(client):
     _run(_insert_user("eve@hs-offenburg.de", "professor"))
     with patch("portal.litellm_update_budget", new_callable=AsyncMock) as mock_budget:
         resp = client.post(
-            "/admin/overview",
+            "/admin",
             data={"action": "update-budget", "email": "eve@hs-offenburg.de", "role": "professor", "budget": "30.00"},
             headers={"Authorization": ADMIN_AUTH},
             follow_redirects=False,
@@ -381,7 +381,7 @@ def test_admin_add_user(client):
     with patch("portal.litellm_create_user", new_callable=AsyncMock, return_value={}), \
          patch("portal.litellm_generate_key", new_callable=AsyncMock, return_value="sk-admin-generated-key"):
         resp = client.post(
-            "/admin/overview",
+            "/admin",
             data={"action": "add-user", "email": "frank@hs-offenburg.de", "role": "student"},
             headers={"Authorization": ADMIN_AUTH},
         )
@@ -395,7 +395,7 @@ def test_admin_add_user_duplicate(client):
     with patch("portal.litellm_create_user", new_callable=AsyncMock, return_value={}), \
          patch("portal.litellm_generate_key", new_callable=AsyncMock, return_value="sk-dup-key"):
         resp = client.post(
-            "/admin/overview",
+            "/admin",
             data={"action": "add-user", "email": "grace@hs-offenburg.de", "role": "student"},
             headers={"Authorization": ADMIN_AUTH},
         )
@@ -404,7 +404,7 @@ def test_admin_add_user_duplicate(client):
 
 def test_admin_unknown_action(client):
     resp = client.post(
-        "/admin/overview",
+        "/admin",
         data={"action": "do-something-weird", "email": "x@hs-offenburg.de", "role": "student"},
         headers={"Authorization": ADMIN_AUTH},
     )

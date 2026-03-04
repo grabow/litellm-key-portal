@@ -5,11 +5,11 @@ Self-service portal for issuing LiteLLM API keys to students, professors, and ad
 URLs:
   GET  /student                  → Student landing page
   GET  /professor                → Professor landing page
-  GET  /admin                    → Admin landing page
   POST /{role}/request-code
   POST /{role}/verify-and-get-key
-  GET  /admin/overview           → Admin dashboard (Nutzerliste + CSV-Export)
-  GET  /admin/overview/export    → CSV-Download
+  GET  /admin           → Admin dashboard (Nutzerliste + CSV-Export)
+  POST /admin           → Admin-Aktionen (delete-key, delete-user, update-budget, add-user)
+  GET  /admin/export    → CSV-Download
   GET  /health
 """
 
@@ -59,7 +59,7 @@ LITELLM_MASTER_KEY = _require("LITELLM_MASTER_KEY")
 
 # E-Mail – Gmail hat Vorrang vor SMTP wenn beides gesetzt ist
 GMAIL_USER = os.environ.get("GMAIL_USER", "").strip()
-GMAIL_APP_KEY = os.environ.get("GMAIL_APP_KEY", "").strip()
+GMAIL_APP_KEY = os.environ.get("GMAIL_APP_KEY", "").replace(" ", "")
 SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "").strip()
@@ -106,12 +106,10 @@ CODE_COOLDOWN_MINUTES = int(os.environ.get("CODE_COOLDOWN_MINUTES", "5"))
 
 ROLE_BUDGETS = {
     "student": STUDENT_BUDGET,
-    "admin": ADMIN_BUDGET,
 }
 
 ROLE_LABELS = {
     "student": "Student:in",
-    "admin": "Admin",
 }
 
 # ---------------------------------------------------------------------------
@@ -281,8 +279,7 @@ async def litellm_get_user_key_tokens(user_id: str) -> list[str]:
         if resp.status_code != 200:
             return []
         data = resp.json()
-        user_info = data.get("user_info") or data
-        keys = user_info.get("keys", [])
+        keys = data.get("keys", [])
         return [k["token"] if isinstance(k, dict) else k for k in keys]
 
 
@@ -436,11 +433,12 @@ def render_key_issued(role: str, email: str, key: str) -> str:
 # Routes
 # ---------------------------------------------------------------------------
 
-VALID_ROLES = set(ROLE_BUDGETS.keys())
+# Rollen die sich selbst registrieren dürfen (Self-Service)
+SELF_SERVICE_ROLES = {"student"}
 
 
 def _check_role(role: str) -> HTMLResponse | None:
-    if role not in VALID_ROLES:
+    if role not in SELF_SERVICE_ROLES:
         return HTMLResponse(render_error(f"Unbekannte Rolle: {role}"), status_code=404)
     return None
 
@@ -477,7 +475,9 @@ def _check_basic_auth(request: Request) -> bool:
 # ---------------------------------------------------------------------------
 
 async def _fetch_litellm_key(user_id: str) -> str:
-    """Return the first key for a LiteLLM user, or '-' on any error."""
+    """Return the masked key_name for a LiteLLM user, or '-' on any error.
+    LiteLLM gibt den vollen Key nach Erstellung nicht mehr zurück – nur den
+    maskierten key_name (z.B. 'sk-...5XXw')."""
     headers = {"Authorization": f"Bearer {LITELLM_MASTER_KEY}"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -489,18 +489,19 @@ async def _fetch_litellm_key(user_id: str) -> str:
             if resp.status_code != 200:
                 return "-"
             data = resp.json()
-            user_info = data.get("user_info") or data
-            keys = user_info.get("keys", [])
+            keys = data.get("keys", [])
             if not keys:
                 return "-"
             first = keys[0]
-            return first.get("token") or first if isinstance(first, (dict, str)) else "-"
+            if isinstance(first, dict):
+                return first.get("key_name") or first.get("token") or "-"
+            return str(first)
     except Exception:
         return "-"
 
 
 async def _build_rows(pool: asyncpg.Pool) -> list[dict]:
-    """Fetch all portal_users, active codes, and LiteLLM keys in parallel."""
+    """Fetch all portal_users, active codes, and masked keys from LiteLLM."""
     now = datetime.now(timezone.utc)
 
     async with pool.acquire() as conn:
@@ -519,7 +520,7 @@ async def _build_rows(pool: asyncpg.Pool) -> list[dict]:
 
     active_codes = {(r["email"], r["role"]): r["expires_at"] for r in codes}
 
-    # Fetch LiteLLM keys in parallel
+    # Masked keys parallel von LiteLLM abrufen
     user_ids = [f"{u['role']}:{u['email']}" for u in users]
     keys = await asyncio.gather(*[_fetch_litellm_key(uid) for uid in user_ids])
 
@@ -563,7 +564,7 @@ def render_admin_overview(rows: list[dict], flash: str = "") -> str:
             f"<td>{cs}</td>"
             f"<td>{r['created_at']}</td>"
             f"<td>"
-            f"<form method='post' action='/admin/overview'"
+            f"<form method='post' action='/admin'"
             f" onsubmit=\"return confirm('Key löschen?')\">"
             f"<input type='hidden' name='action' value='delete-key'>"
             f"<input type='hidden' name='email' value='{e}'>"
@@ -571,7 +572,7 @@ def render_admin_overview(rows: list[dict], flash: str = "") -> str:
             f"<button class='btn-sm btn-warn'>Key löschen</button></form>"
             f"</td>"
             f"<td>"
-            f"<form method='post' action='/admin/overview'"
+            f"<form method='post' action='/admin'"
             f" onsubmit=\"return confirm('Nutzer komplett löschen?')\">"
             f"<input type='hidden' name='action' value='delete-user'>"
             f"<input type='hidden' name='email' value='{e}'>"
@@ -579,7 +580,7 @@ def render_admin_overview(rows: list[dict], flash: str = "") -> str:
             f"<button class='btn-sm btn-danger'>Nutzer löschen</button></form>"
             f"</td>"
             f"<td>"
-            f"<form method='post' action='/admin/overview' style='display:flex;gap:4px'>"
+            f"<form method='post' action='/admin' style='display:flex;gap:4px'>"
             f"<input type='hidden' name='action' value='update-budget'>"
             f"<input type='hidden' name='email' value='{e}'>"
             f"<input type='hidden' name='role' value='{role}'>"
@@ -627,7 +628,7 @@ tr:hover td { background: #f0f4ff; }
 <style>{css_extra}</style>
 {flash_html}
 <div class="topbar">
-  <a class="btn-csv" href="/admin/overview/export">CSV herunterladen</a>
+  <a class="btn-csv" href="/admin/export">CSV herunterladen</a>
   <span class="count"><strong>{count}</strong> Einträge</span>
 </div>
 <table>
@@ -644,7 +645,7 @@ tr:hover td { background: #f0f4ff; }
 
 <div class="add-section">
   <h2>Nutzer manuell hinzufügen</h2>
-  <form method="post" action="/admin/overview" class="add-form">
+  <form method="post" action="/admin" class="add-form">
     <input type="hidden" name="action" value="add-user">
     <div>
       <label>E-Mail</label><br>
@@ -665,7 +666,7 @@ tr:hover td { background: #f0f4ff; }
     return render_base("Admin-Übersicht – LiteLLM Portal", "admin", body)
 
 
-@app.get("/admin/overview", response_class=HTMLResponse)
+@app.get("/admin", response_class=HTMLResponse)
 async def admin_overview(request: Request, flash: str = ""):
     if not _check_basic_auth(request):
         return _UNAUTHORIZED
@@ -679,7 +680,7 @@ async def admin_overview(request: Request, flash: str = ""):
     return HTMLResponse(render_admin_overview(rows, flash_msg))
 
 
-@app.post("/admin/overview", response_class=HTMLResponse)
+@app.post("/admin", response_class=HTMLResponse)
 async def admin_overview_post(
     request: Request,
     action: str = Form(...),
@@ -704,7 +705,7 @@ async def admin_overview_post(
         except Exception as exc:
             logger.error("delete-key Fehler: %s", exc)
             return HTMLResponse(render_error(f"Fehler beim Löschen des Keys: {exc}", "admin"), status_code=502)
-        return RedirectResponse("/admin/overview?flash=key-deleted", status_code=303)
+        return RedirectResponse("/admin?flash=key-deleted", status_code=303)
 
     elif action == "delete-user":
         try:
@@ -720,7 +721,7 @@ async def admin_overview_post(
                 "UPDATE portal_verification_codes SET used = TRUE WHERE email = $1 AND role = $2",
                 email, role,
             )
-        return RedirectResponse("/admin/overview?flash=user-deleted", status_code=303)
+        return RedirectResponse("/admin?flash=user-deleted", status_code=303)
 
     elif action == "update-budget":
         try:
@@ -734,10 +735,10 @@ async def admin_overview_post(
         except Exception as exc:
             logger.error("update-budget Fehler: %s", exc)
             return HTMLResponse(render_error(f"Fehler beim Aktualisieren des Budgets: {exc}", "admin"), status_code=502)
-        return RedirectResponse("/admin/overview?flash=budget-updated", status_code=303)
+        return RedirectResponse("/admin?flash=budget-updated", status_code=303)
 
     elif action == "add-user":
-        if role not in VALID_ROLES:
+        if role not in ROLE_BUDGETS:
             return HTMLResponse(render_error(f"Unbekannte Rolle: {role}", "admin"), status_code=400)
         try:
             await litellm_create_user(user_id, ROLE_BUDGETS[role])
@@ -755,14 +756,14 @@ async def admin_overview_post(
             f"<p class='hint'>Rolle: <strong>{ROLE_LABELS.get(role, role)}</strong> | "
             f"Budget: <strong>{ROLE_BUDGETS[role]:.2f} €/Monat</strong><br>"
             f"API-Endpunkt: <code>{LITELLM_BASE_URL}</code></p>"
-            f"<br><a href='/admin/overview'>← Zurück zur Übersicht</a>"
+            f"<br><a href='/admin'>← Zurück zur Übersicht</a>"
         )
         return HTMLResponse(render_base("Nutzer angelegt – Admin", "admin", body))
 
     return HTMLResponse(render_error(f"Unbekannte Aktion: {action}", "admin"), status_code=400)
 
 
-@app.get("/admin/overview/export")
+@app.get("/admin/export")
 async def admin_overview_export(request: Request):
     if not _check_basic_auth(request):
         return _UNAUTHORIZED
