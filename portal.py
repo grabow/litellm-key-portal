@@ -84,6 +84,7 @@ else:
 CODE_SECRET = _require("CODE_SECRET")
 assert len(CODE_SECRET) >= 32, "CODE_SECRET must be at least 32 characters long"
 ALLOWED_DOMAIN = _require("ALLOWED_DOMAIN")
+EMAIL_PLACEHOLDER = os.environ.get("EMAIL_PLACEHOLDER", "firstname.lastname@university.edu").strip() or "firstname.lastname@university.edu"
 STUDENT_BUDGET = float(os.environ.get("STUDENT_BUDGET", "5.00"))
 PROFESSOR_BUDGET = float(os.environ.get("PROFESSOR_BUDGET", "20.00"))
 ADMIN_BUDGET = float(os.environ.get("ADMIN_BUDGET", "50.00"))
@@ -116,7 +117,7 @@ ROLE_BUDGETS = {
 }
 
 SUPPORTED_LANGS = {"de", "en"}
-DEFAULT_LANG = "de"
+DEFAULT_LANG = "en"
 
 ROLE_LABELS = {
     "student": {"de": "Student:in", "en": "Student"},
@@ -182,8 +183,8 @@ TRANSLATIONS = {
     "email_label": {"de": "Hochschul-E-Mail-Adresse", "en": "University email address"},
     "email_short_label": {"de": "E-Mail", "en": "Email"},
     "email_placeholder": {
-        "de": "vorname.nachname@hs-offenburg.de",
-        "en": "firstname.lastname@hs-offenburg.de",
+        "de": EMAIL_PLACEHOLDER,
+        "en": EMAIL_PLACEHOLDER,
     },
     "request_code": {"de": "Bestätigungscode anfordern", "en": "Request verification code"},
     "existing_key_hint": {

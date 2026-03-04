@@ -48,6 +48,7 @@ os.environ["SMTP_PASSWORD"] = "password"
 os.environ["SMTP_FROM"] = "Test <test@hs-offenburg.de>"
 os.environ["CODE_SECRET"] = "a-test-secret-that-is-at-least-32-chars!!"
 os.environ["ALLOWED_DOMAIN"] = "hs-offenburg.de"
+os.environ["EMAIL_PLACEHOLDER"] = "firstname.lastname@university.edu"
 os.environ["RATE_LIMIT_REQUEST_CODE"] = "1000/minute"
 os.environ["RATE_LIMIT_VERIFY"] = "1000/minute"
 os.environ["DATABASE_URL"] = "postgresql://portal:portal@localhost:5433/portal"
@@ -175,8 +176,9 @@ def test_health_endpoint(client):
 def test_landing_student(client):
     resp = client.get("/student")
     assert resp.status_code == 200
-    assert "Student:in" in resp.text
-    assert "Bestätigungscode" in resp.text
+    assert "Student" in resp.text
+    assert "Request verification code" in resp.text
+    assert 'placeholder="firstname.lastname@university.edu"' in resp.text
     assert "/student/enter-code" in resp.text
 
 
@@ -191,9 +193,10 @@ def test_landing_student_english(client):
 def test_enter_code_page(client):
     resp = client.get("/student/enter-code")
     assert resp.status_code == 200
-    assert "Code eingeben" in resp.text
+    assert "Enter code" in resp.text
     assert 'name="email"' in resp.text
     assert 'name="code"' in resp.text
+    assert 'placeholder="firstname.lastname@university.edu"' in resp.text
     assert "replace(/\\D/g,''" in resp.text
 
 
@@ -232,7 +235,7 @@ def test_request_code_success(client):
     with patch("portal.send_verification_email") as mock_send:
         resp = client.post("/student/request-code", data={"email": "alice@hs-offenburg.de"})
     assert resp.status_code == 200
-    assert "Bestätigungscode" in resp.text
+    assert "verification code" in resp.text
     mock_send.assert_called_once()
     assert mock_send.call_args[0][0] == "alice@hs-offenburg.de"
 
@@ -250,14 +253,14 @@ def test_request_code_cooldown(client):
         resp2 = client.post("/student/request-code", data={"email": "alice@hs-offenburg.de"})
     assert resp1.status_code == 200
     assert resp2.status_code == 429
-    assert "warten" in resp2.text.lower() or "bereits gesendet" in resp2.text.lower()
+    assert "please wait" in resp2.text.lower() or "already sent" in resp2.text.lower()
 
 
 def test_request_code_existing_user_allowed(client):
     with patch("portal.send_verification_email") as mock_send:
         resp = client.post("/student/request-code", data={"email": "alice@hs-offenburg.de"})
     assert resp.status_code == 200
-    assert "Bestätigungscode" in resp.text
+    assert "verification code" in resp.text
     mock_send.assert_called_once()
 
 
@@ -287,7 +290,7 @@ def test_verify_wrong_code(client):
         data={"email": "alice@hs-offenburg.de", "code": "999999"},
     )
     assert resp.status_code == 400
-    assert "Falscher Bestätigungscode" in resp.text
+    assert "Incorrect verification code" in resp.text
 
 
 def test_expired_code_rejected(client):
@@ -297,7 +300,7 @@ def test_expired_code_rejected(client):
         data={"email": "alice@hs-offenburg.de", "code": "222222"},
     )
     assert resp.status_code == 400
-    assert "Kein gültiger Code" in resp.text
+    assert "No valid code was found" in resp.text
 
 
 def test_verify_invalid_code_format(client):
@@ -364,7 +367,7 @@ def test_admin_overview_authenticated_empty(client):
     ):
         resp = client.get("/admin", headers={"Authorization": ADMIN_AUTH})
     assert resp.status_code == 200
-    assert "0" in resp.text or "Keine Einträge" in resp.text
+    assert "0" in resp.text or "No entries" in resp.text
 
 
 def test_admin_overview_authenticated_empty_english(client):
@@ -569,7 +572,7 @@ def test_admin_send_inform_email(client):
     assert resp.status_code == 303
     assert "flash=inform-email-sent" in resp.headers["location"]
     assert "count=2" in resp.headers["location"]
-    mock_send.assert_called_once_with(["alice@hs-offenburg.de", "bob@hs-offenburg.de"], "de")
+    mock_send.assert_called_once_with(["alice@hs-offenburg.de", "bob@hs-offenburg.de"], "en")
 
 
 def test_admin_send_test_inform_email(client):
@@ -584,7 +587,7 @@ def test_admin_send_test_inform_email(client):
 
     assert resp.status_code == 303
     assert "test-inform-email-sent" in resp.headers["location"]
-    mock_send.assert_called_once_with(["test@hs-offenburg.de"], "de")
+    mock_send.assert_called_once_with(["test@hs-offenburg.de"], "en")
 
 
 def test_admin_reset_students_requires_confirmation(client):

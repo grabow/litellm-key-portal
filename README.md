@@ -4,7 +4,7 @@ Self-service portal for issuing LiteLLM API keys to students. Admins manage user
 
 This project is intentionally separate from LiteLLM itself. A working LiteLLM installation is required, and this portal only needs the LiteLLM base URL and the LiteLLM master key. Running LiteLLM separately, for example in Docker, is recommended.
 
-The web UI supports German and English. German remains the default for internal use; switch to English with `?lang=en` and back with `?lang=de`.
+The web UI supports German and English. English is the default; switch to German with `?lang=de` and back to English with `?lang=en`.
 
 ---
 
@@ -62,10 +62,14 @@ Core variables:
 - `LITELLM_MASTER_KEY`: LiteLLM master key
 - `DATABASE_URL`: PostgreSQL URL for this portal
 - `ALLOWED_DOMAIN`: allowed email domain, for example `hs-offenburg.de`
+- `EMAIL_PLACEHOLDER`: example address shown in email form fields, for example `firstname.lastname@university.edu`
 - `STUDENT_BUDGET`: monthly max limit for student users
 - `ADMIN_USERNAME` / `ADMIN_PASSWORD`: HTTP Basic Auth for `/admin`
 - `TEST_INFO_EMAIL`: target address for the admin test mail button and the CLI test mail script
-- `CODE_SECRET`: HMAC secret for verification codes, at least 32 characters
+- `CODE_SECRET`: secret used only for hashing and validating the 6-digit email verification codes, at least 32 characters; generate a strong value with `openssl rand -hex 32`
+- `RATE_LIMIT_REQUEST_CODE`: rate limit for `POST /student/request-code`, for example `5/minute`; this is the general request limit per client IP, not per email address
+- `RATE_LIMIT_VERIFY`: rate limit for `POST /student/verify-and-get-key`, for example `10/minute`; this also applies per client IP
+- `CODE_COOLDOWN_MINUTES`: additional cooldown per email address before a new verification code can be sent again; defaults to `5` if not set
 
 For email delivery, configure either:
 
