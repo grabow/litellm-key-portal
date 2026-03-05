@@ -8,6 +8,23 @@ The web UI supports German and English. English is the default; switch to German
 
 ---
 
+## Minimal Architecture
+
+```text
+Student
+        |
+        v
+FastAPI Portal (portal.py)
+        |
+        v
+LiteLLM Gateway/Proxy (Admin API, internal)
+        |
+        v
+OpenAI / other configured providers
+```
+
+---
+
 ## Overview
 
 - Self-service flow for students via email verification code
@@ -43,6 +60,8 @@ cp .env.example .env
 # 4. Start the app
 uv run uvicorn portal:app --reload --port 8080
 ```
+
+Note: `uvicorn portal:app` uses Python import semantics. `portal` refers to `portal.py` (module name), and `app` refers to the `FastAPI()` instance exported as `app` in that module.
 
 Open locally:
 
