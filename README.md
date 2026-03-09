@@ -58,6 +58,9 @@ uv sync --all-groups
 cp .env.example .env
 
 # 4. Start the app
+uv run portal.py
+
+# or with auto-reload during development
 uv run uvicorn portal:app --reload --port 8080
 ```
 

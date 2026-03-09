@@ -37,6 +37,7 @@ from urllib.parse import urlencode
 
 import asyncpg
 import httpx
+import uvicorn
 from httpx import HTTPStatusError
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Path, Request, Response
@@ -1664,3 +1665,11 @@ async def verify_and_get_key(
 
     logger.info("Key ausgestellt: email=%s role=%s", email, role)
     return HTMLResponse(render_key_issued(role, email, api_key, lang))
+
+
+def run() -> None:
+    uvicorn.run(app, host="0.0.0.0", port=8080)
+
+
+if __name__ == "__main__":
+    run()

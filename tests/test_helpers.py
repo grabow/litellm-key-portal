@@ -108,3 +108,18 @@ def test_validate_email_any_role_only_domain_checked(client=None):
 def test_validate_email_empty():
     ok, msg = validate_email("", "student")
     assert ok is False
+
+
+def test_run_starts_uvicorn(monkeypatch):
+    import portal
+
+    calls = []
+
+    def fake_run(app, host, port):
+        calls.append((app, host, port))
+
+    monkeypatch.setattr(portal.uvicorn, "run", fake_run)
+
+    portal.run()
+
+    assert calls == [(portal.app, "0.0.0.0", 8080)]
