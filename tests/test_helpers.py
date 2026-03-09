@@ -39,7 +39,14 @@ os.environ.setdefault("ADMIN_PASSWORD", "testpassword")
 os.environ.setdefault("RATE_LIMIT_REQUEST_CODE", "1000/minute")
 os.environ.setdefault("RATE_LIMIT_VERIFY", "1000/minute")
 
-from portal import generate_code, hash_code, verify_code, validate_email
+from portal import (
+    _build_database_startup_error,
+    _describe_database_target,
+    generate_code,
+    hash_code,
+    validate_email,
+    verify_code,
+)
 
 
 def test_hash_code_deterministic():
@@ -108,6 +115,22 @@ def test_validate_email_any_role_only_domain_checked(client=None):
 def test_validate_email_empty():
     ok, msg = validate_email("", "student")
     assert ok is False
+
+
+def test_describe_database_target_redacts_credentials():
+    target = _describe_database_target("postgresql://portal:secret@localhost:5433/portal")
+    assert target == "localhost:5433/portal"
+
+
+def test_build_database_startup_error_is_actionable():
+    message = _build_database_startup_error(
+        "postgresql://portal:secret@localhost:5433/portal",
+        ConnectionRefusedError("connection refused"),
+    )
+    assert "localhost:5433/portal" in message
+    assert "DATABASE_URL" in message
+    assert "docker compose up -d" in message
+    assert "secret" not in message
 
 
 def test_run_starts_uvicorn(monkeypatch):

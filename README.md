@@ -39,6 +39,7 @@ OpenAI / other configured providers
 
 - `uv` for installation and execution
 - PostgreSQL for the portal database
+- Docker Compose starts a pinned local PostgreSQL `18.3` container via `docker-compose.yml`
 - A separately running LiteLLM instance
 - SMTP or Gmail credentials for email delivery
 
@@ -49,6 +50,12 @@ OpenAI / other configured providers
 ```bash
 # 1. Start the portal database
 docker compose up -d
+
+# Optional: verify the database is running
+docker compose ps
+
+# Optional: inspect database logs
+docker compose logs db
 
 # 2. Create the Python environment and install dependencies
 uv venv --python 3.12
@@ -63,6 +70,8 @@ uv run portal.py
 # or with auto-reload during development
 uv run uvicorn portal:app --reload --port 8080
 ```
+
+If you previously ran the older local PostgreSQL 16 container from this repository, the new PostgreSQL 18.3 setup uses a separate Docker volume so your old local dev data does not block startup. If you explicitly want to delete the old local database volume, run `docker volume rm hsog-litellm-key-portal_portal_pg` after stopping the stack.
 
 Note: `uvicorn portal:app` uses Python import semantics. `portal` refers to `portal.py` (module name), and `app` refers to the `FastAPI()` instance exported as `app` in that module.
 
@@ -146,6 +155,7 @@ The mail and reset flows are already prepared for later cron usage. The cron int
 - `scripts/send_test_info_mail.py`
 - `scripts/send_info_mail.py`
 - `scripts/reset_students.py`
+- `scripts/seed_dummy_students.py`
 
 Examples:
 
@@ -154,11 +164,13 @@ Examples:
 uv run python scripts/send_test_info_mail.py --dry-run
 uv run python scripts/send_info_mail.py --dry-run
 uv run python scripts/reset_students.py --dry-run
+uv run python scripts/seed_dummy_students.py --dry-run
 
 # Live execution
 uv run python scripts/send_test_info_mail.py --confirm
 uv run python scripts/send_info_mail.py --confirm
 uv run python scripts/reset_students.py --confirm
+uv run python scripts/seed_dummy_students.py --confirm
 ```
 
 `infomail.txt` is the shared template file for both admin mail actions and the CLI mail scripts.

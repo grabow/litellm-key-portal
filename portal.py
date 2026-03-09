@@ -33,7 +33,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import asyncpg
 import httpx
@@ -478,12 +478,33 @@ CREATE TABLE IF NOT EXISTS portal_users (
 """
 
 
+def _describe_database_target(database_url: str) -> str:
+    parsed = urlsplit(database_url)
+    host = parsed.hostname or "<unknown-host>"
+    port = f":{parsed.port}" if parsed.port else ""
+    db_name = parsed.path.lstrip("/") or "<unknown-db>"
+    return f"{host}{port}/{db_name}"
+
+
+def _build_database_startup_error(database_url: str, exc: Exception) -> str:
+    target = _describe_database_target(database_url)
+    return (
+        f"Failed to connect to PostgreSQL at {target}. "
+        "Check that the database is running and that DATABASE_URL is correct. "
+        "For local development, start it with `docker compose up -d`. "
+        f"Original error: {type(exc).__name__}: {exc}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Lifespan – DB pool init
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+    try:
+        pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+    except Exception as exc:
+        raise RuntimeError(_build_database_startup_error(DATABASE_URL, exc)) from exc
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA_SQL)
     app.state.pool = pool

@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16
+    image: postgres:18.3
     container_name: portal-db
     environment:
       POSTGRES_USER: portal
@@ -9,7 +9,7 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - portal_pg:/var/lib/postgresql/data
+      - portal_pg_18:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U portal -d portal"]
       interval: 5s
@@ -17,4 +17,4 @@ services:
       retries: 20
 
 volumes:
-  portal_pg:
+  portal_pg_18:
