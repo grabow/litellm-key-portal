@@ -118,7 +118,7 @@ ROLE_BUDGETS = {
 }
 
 SUPPORTED_LANGS = {"de", "en"}
-DEFAULT_LANG = "de"
+DEFAULT_LANG = "en"
 
 ROLE_LABELS = {
     "student": {"de": "Student:in", "en": "Student"},
