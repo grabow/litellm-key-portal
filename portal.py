@@ -118,7 +118,7 @@ ROLE_BUDGETS = {
 }
 
 SUPPORTED_LANGS = {"de", "en"}
-DEFAULT_LANG = "en"
+DEFAULT_LANG = "de"
 
 ROLE_LABELS = {
     "student": {"de": "Student:in", "en": "Student"},
@@ -904,6 +904,11 @@ def _check_role(role: str, lang: str = DEFAULT_LANG) -> HTMLResponse | None:
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/")
+async def root():
+    return RedirectResponse("/student?lang=de", status_code=302)
 
 
 # ---------------------------------------------------------------------------
