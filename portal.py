@@ -908,7 +908,7 @@ async def health():
 
 @app.get("/")
 async def root():
-    return RedirectResponse("/student?lang=de", status_code=302)
+    return RedirectResponse("/student?lang=en", status_code=302)
 
 
 # ---------------------------------------------------------------------------
