@@ -24,6 +24,7 @@ import hmac
 import hashlib
 import html
 import io
+import ipaddress
 import logging
 import math
 import os
@@ -33,7 +34,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import asyncpg
 import httpx
@@ -453,6 +454,78 @@ def _with_lang(path: str, lang: str, **params: str) -> str:
             query_params[key] = value
     return f"{path}?{urlencode(query_params)}"
 
+
+def _first_header_value(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.split(",", 1)[0].strip()
+
+
+def _forwarded_param(header_value: str, key: str) -> str:
+    for part in header_value.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name.lower() == key:
+            return value.strip().strip('"')
+    return ""
+
+
+def _external_request_scheme(request: Request) -> str:
+    forwarded = _first_header_value(request.headers.get("x-forwarded-proto"))
+    if forwarded:
+        return forwarded
+    forwarded_header = _first_header_value(request.headers.get("forwarded"))
+    proto = _forwarded_param(forwarded_header, "proto")
+    if proto:
+        return proto
+    return request.url.scheme
+
+
+def _external_request_host(request: Request) -> str:
+    forwarded = _first_header_value(request.headers.get("x-forwarded-host"))
+    if forwarded:
+        return forwarded
+    forwarded_header = _first_header_value(request.headers.get("forwarded"))
+    host = _forwarded_param(forwarded_header, "host")
+    if host:
+        return host
+    return request.headers.get("host", "")
+
+
+def _origin_from_scheme_host_and_port(scheme: str, host: str, port: int | None) -> str:
+    hostname = urlsplit(f"//{host}").hostname
+    if not hostname:
+        return ""
+    default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    netloc = hostname if default_port or port is None else f"{hostname}:{port}"
+    return urlunsplit((scheme, netloc, "", "", ""))
+
+
+def _is_loopback_or_unspecified_host(host: str) -> bool:
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
+
+
+def _display_litellm_endpoint(request: Request) -> str:
+    parsed = urlsplit(LITELLM_BASE_URL)
+    if not _is_loopback_or_unspecified_host(parsed.hostname or ""):
+        return LITELLM_BASE_URL
+
+    origin = _origin_from_scheme_host_and_port(
+        _external_request_scheme(request),
+        _external_request_host(request),
+        parsed.port,
+    )
+    if not origin:
+        return LITELLM_BASE_URL
+    return urlunsplit((urlsplit(origin).scheme, urlsplit(origin).netloc, parsed.path, parsed.query, parsed.fragment))
+
 # ---------------------------------------------------------------------------
 # PostgreSQL schema
 # ---------------------------------------------------------------------------
@@ -864,7 +937,7 @@ def render_code_sent(role: str, email: str, lang: str = DEFAULT_LANG) -> str:
     return render_base(_t("enter_code_title", lang), role, body, lang=lang, switch_path=f"/{role}/enter-code", email=email)
 
 
-def render_key_issued(role: str, email: str, key: str, lang: str = DEFAULT_LANG) -> str:
+def render_key_issued(role: str, email: str, key: str, endpoint: str, lang: str = DEFAULT_LANG) -> str:
     budget = ROLE_BUDGETS.get(role, 0)
     esc_email = html.escape(email)
     esc_key = html.escape(key)
@@ -878,7 +951,7 @@ def render_key_issued(role: str, email: str, key: str, lang: str = DEFAULT_LANG)
   {_t("existing_key_replaced", lang)}<br><br>
   <strong>{_t("save_key_securely", lang)}</strong>
   {_t("shown_once", lang)}<br><br>
-  {_t("api_endpoint", lang)}: <code>{LITELLM_BASE_URL}</code>
+  {_t("api_endpoint", lang)}: <code>{html.escape(endpoint)}</code>
 </p>
 """
     return render_base(_t("key_issued_title", lang), role, body, lang=lang, switch_path=f"/{role}")
@@ -1396,7 +1469,7 @@ async def admin_overview_post(
         body = (
             f"<div class='success'>{_t('add_user_success', lang, email=html.escape(email))}</div>"
             f"<div class='key-box'>{api_key}</div>"
-            f"<p class='hint'>{_t('role_budget_endpoint', lang, role=html.escape(_role_label(role, lang)), budget=ROLE_BUDGETS[role], endpoint=html.escape(LITELLM_BASE_URL))}</p>"
+            f"<p class='hint'>{_t('role_budget_endpoint', lang, role=html.escape(_role_label(role, lang)), budget=ROLE_BUDGETS[role], endpoint=html.escape(_display_litellm_endpoint(request)) )}</p>"
             f"<br><a href='{html.escape(_with_lang('/admin', lang), quote=True)}'>← {_t('back_to_overview', lang)}</a>"
         )
         return HTMLResponse(render_base(_t("user_created_title", lang), "admin", body, lang=lang, switch_path="/admin"))
@@ -1690,7 +1763,7 @@ async def verify_and_get_key(
         )
 
     logger.info("Key ausgestellt: email=%s role=%s", email, role)
-    return HTMLResponse(render_key_issued(role, email, api_key, lang))
+    return HTMLResponse(render_key_issued(role, email, api_key, _display_litellm_endpoint(request), lang))
 
 
 def run() -> None:

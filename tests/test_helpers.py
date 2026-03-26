@@ -21,6 +21,7 @@ import os
 import sys
 
 import pytest
+from starlette.requests import Request
 
 # Set required env vars before importing portal
 os.environ.setdefault("LITELLM_BASE_URL", "http://localhost:4000")
@@ -41,6 +42,7 @@ os.environ.setdefault("RATE_LIMIT_VERIFY", "1000/minute")
 
 from portal import (
     _build_database_startup_error,
+    _display_litellm_endpoint,
     _describe_database_target,
     generate_code,
     hash_code,
@@ -131,6 +133,42 @@ def test_build_database_startup_error_is_actionable():
     assert "DATABASE_URL" in message
     assert "docker compose up -d" in message
     assert "secret" not in message
+
+
+def test_display_litellm_endpoint_uses_request_origin_for_localhost_base_url():
+    request = Request(
+        {
+            "type": "http",
+            "scheme": "http",
+            "server": ("127.0.0.1", 8080),
+            "client": ("127.0.0.1", 12345),
+            "method": "GET",
+            "path": "/student",
+            "headers": [(b"host", b"203.0.113.10")],
+        }
+    )
+
+    assert _display_litellm_endpoint(request) == "http://203.0.113.10:4000"
+
+
+def test_display_litellm_endpoint_prefers_forwarded_headers():
+    request = Request(
+        {
+            "type": "http",
+            "scheme": "http",
+            "server": ("127.0.0.1", 8080),
+            "client": ("127.0.0.1", 12345),
+            "method": "GET",
+            "path": "/student",
+            "headers": [
+                (b"host", b"portal.internal:8080"),
+                (b"x-forwarded-host", b"203.0.113.10"),
+                (b"x-forwarded-proto", b"https"),
+            ],
+        }
+    )
+
+    assert _display_litellm_endpoint(request) == "https://203.0.113.10:4000"
 
 
 def test_run_starts_uvicorn(monkeypatch):
