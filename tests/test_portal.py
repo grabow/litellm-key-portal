@@ -40,6 +40,7 @@ import httpx
 import pytest
 
 os.environ["LITELLM_BASE_URL"] = "http://localhost:4000"
+os.environ["LITELLM_PUBLIC_BASE_URL"] = "https://ai-portal.hs-offenburg.de/litellm"
 os.environ["LITELLM_MASTER_KEY"] = "test-master-key"
 os.environ["SMTP_HOST"] = "smtp.example.com"
 os.environ["SMTP_PORT"] = "587"
@@ -59,6 +60,8 @@ import base64
 
 import portal
 from fastapi.testclient import TestClient
+
+portal.LITELLM_PUBLIC_BASE_URL = os.environ["LITELLM_PUBLIC_BASE_URL"]
 
 ADMIN_AUTH = "Basic " + base64.b64encode(b"testadmin:testpassword").decode()
 
@@ -436,17 +439,18 @@ def test_verify_success_full_flow(client):
 def test_verify_success_shows_request_origin_as_api_endpoint():
     _run(_insert_code("bob@hs-offenburg.de", "student", "456789"))
 
-    with TestClient(portal.app, base_url="http://203.0.113.10", raise_server_exceptions=True) as custom_client:
-        with patch("portal.litellm_user_exists", new_callable=AsyncMock, return_value=False), \
-             patch("portal.litellm_create_user", new_callable=AsyncMock, return_value={}), \
-             patch("portal.litellm_generate_key", new_callable=AsyncMock, return_value="sk-test-api-key-12345"):
-            resp = custom_client.post(
-                "/student/verify-and-get-key",
-                data={"email": "bob@hs-offenburg.de", "code": "456789"},
-            )
+    with patch.object(portal, "LITELLM_PUBLIC_BASE_URL", "https://ai-portal.hs-offenburg.de/litellm"):
+        with TestClient(portal.app, base_url="http://203.0.113.10", raise_server_exceptions=True) as custom_client:
+            with patch("portal.litellm_user_exists", new_callable=AsyncMock, return_value=False), \
+                 patch("portal.litellm_create_user", new_callable=AsyncMock, return_value={}), \
+                 patch("portal.litellm_generate_key", new_callable=AsyncMock, return_value="sk-test-api-key-12345"):
+                resp = custom_client.post(
+                    "/student/verify-and-get-key",
+                    data={"email": "bob@hs-offenburg.de", "code": "456789"},
+                )
 
     assert resp.status_code == 200
-    assert "http://203.0.113.10:4000" in resp.text
+    assert "https://ai-portal.hs-offenburg.de/litellm" in resp.text
     assert "localhost:4000" not in resp.text
 
 
@@ -554,19 +558,20 @@ def test_admin_add_user(client):
 
 
 def test_admin_add_user_shows_request_origin_as_api_endpoint():
-    with TestClient(portal.app, base_url="http://203.0.113.10", raise_server_exceptions=True) as custom_client:
-        with patch("portal.litellm_create_user", new_callable=AsyncMock, return_value={}), \
-             patch("portal.litellm_get_user_key_tokens", new_callable=AsyncMock, return_value=[]), \
-             patch("portal.litellm_delete_keys", new_callable=AsyncMock), \
-             patch("portal.litellm_generate_key", new_callable=AsyncMock, return_value="sk-admin-generated-key"):
-            resp = custom_client.post(
-                "/admin",
-                data={"action": "add-user", "email": "frank@hs-offenburg.de", "role": "student"},
-                headers={"Authorization": ADMIN_AUTH},
-            )
+    with patch.object(portal, "LITELLM_PUBLIC_BASE_URL", "https://ai-portal.hs-offenburg.de/litellm"):
+        with TestClient(portal.app, base_url="http://203.0.113.10", raise_server_exceptions=True) as custom_client:
+            with patch("portal.litellm_create_user", new_callable=AsyncMock, return_value={}), \
+                 patch("portal.litellm_get_user_key_tokens", new_callable=AsyncMock, return_value=[]), \
+                 patch("portal.litellm_delete_keys", new_callable=AsyncMock), \
+                 patch("portal.litellm_generate_key", new_callable=AsyncMock, return_value="sk-admin-generated-key"):
+                resp = custom_client.post(
+                    "/admin",
+                    data={"action": "add-user", "email": "frank@hs-offenburg.de", "role": "student"},
+                    headers={"Authorization": ADMIN_AUTH},
+                )
 
     assert resp.status_code == 200
-    assert "http://203.0.113.10:4000" in resp.text
+    assert "https://ai-portal.hs-offenburg.de/litellm" in resp.text
     assert "localhost:4000" not in resp.text
 
 

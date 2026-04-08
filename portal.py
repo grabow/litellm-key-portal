@@ -62,6 +62,7 @@ def _require(key: str) -> str:
 
 
 LITELLM_BASE_URL = _require("LITELLM_BASE_URL").rstrip("/")
+LITELLM_PUBLIC_BASE_URL = os.environ.get("LITELLM_PUBLIC_BASE_URL", "").strip().rstrip("/")
 LITELLM_MASTER_KEY = _require("LITELLM_MASTER_KEY")
 
 # E-Mail – Gmail hat Vorrang vor SMTP wenn beides gesetzt ist
@@ -513,6 +514,9 @@ def _is_loopback_or_unspecified_host(host: str) -> bool:
 
 
 def _display_litellm_endpoint(request: Request) -> str:
+    if LITELLM_PUBLIC_BASE_URL:
+        return LITELLM_PUBLIC_BASE_URL
+
     parsed = urlsplit(LITELLM_BASE_URL)
     if not _is_loopback_or_unspecified_host(parsed.hostname or ""):
         return LITELLM_BASE_URL

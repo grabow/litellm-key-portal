@@ -89,7 +89,8 @@ Copy `.env.example` to `.env` and set real values.
 
 Core variables:
 
-- `LITELLM_BASE_URL`: LiteLLM base URL, for example `http://localhost:4000`
+- `LITELLM_BASE_URL`: internal LiteLLM base URL used by the portal, for example `http://localhost:4000`
+- `LITELLM_PUBLIC_BASE_URL`: public LiteLLM base URL shown to users, for example `https://ai-portal.hs-offenburg.de/litellm`
 - `LITELLM_MASTER_KEY`: LiteLLM master key
 - `DATABASE_URL`: PostgreSQL URL for this portal
 - `ALLOWED_DOMAIN`: allowed email domain, for example `hs-offenburg.de`

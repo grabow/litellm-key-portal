@@ -25,6 +25,7 @@ from starlette.requests import Request
 
 # Set required env vars before importing portal
 os.environ.setdefault("LITELLM_BASE_URL", "http://localhost:4000")
+os.environ.setdefault("LITELLM_PUBLIC_BASE_URL", "")
 os.environ.setdefault("LITELLM_MASTER_KEY", "test-master-key")
 os.environ.setdefault("SMTP_HOST", "smtp.example.com")
 os.environ.setdefault("SMTP_PORT", "587")
@@ -148,6 +149,8 @@ def test_display_litellm_endpoint_uses_request_origin_for_localhost_base_url():
         }
     )
 
+    import portal
+    portal.LITELLM_PUBLIC_BASE_URL = ""
     assert _display_litellm_endpoint(request) == "http://203.0.113.10:4000"
 
 
@@ -168,7 +171,26 @@ def test_display_litellm_endpoint_prefers_forwarded_headers():
         }
     )
 
+    import portal
+    portal.LITELLM_PUBLIC_BASE_URL = ""
     assert _display_litellm_endpoint(request) == "https://203.0.113.10:4000"
+
+
+def test_display_litellm_endpoint_prefers_explicit_public_base_url(monkeypatch):
+    request = Request(
+        {
+            "type": "http",
+            "scheme": "http",
+            "server": ("127.0.0.1", 8080),
+            "client": ("127.0.0.1", 12345),
+            "method": "GET",
+            "path": "/student",
+            "headers": [(b"host", b"203.0.113.10")],
+        }
+    )
+
+    monkeypatch.setattr("portal.LITELLM_PUBLIC_BASE_URL", "https://ai-portal.hs-offenburg.de/litellm")
+    assert _display_litellm_endpoint(request) == "https://ai-portal.hs-offenburg.de/litellm"
 
 
 def test_run_starts_uvicorn(monkeypatch):
